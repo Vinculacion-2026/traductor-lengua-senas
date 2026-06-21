@@ -96,8 +96,22 @@ async function handleApi(request, response, url) {
 
       const key = url.searchParams.get("type") === "letters" ? "letters" : "signs";
       const label = url.searchParams.get("label");
+      const sampleIndexRaw = url.searchParams.get("sampleIndex");
       const data = await readGlobalData();
-      data[key] = data[key].filter((entry) => entry.label !== label);
+
+      if (sampleIndexRaw !== null) {
+        const sampleIndex = Number(sampleIndexRaw);
+        const entry = data[key].find((item) => item.label === label);
+        if (!entry || !Array.isArray(entry.samples) || !Number.isInteger(sampleIndex) || sampleIndex < 0 || sampleIndex >= entry.samples.length) {
+          sendJson(response, 400, { error: "Muestra global invalida" });
+          return;
+        }
+        entry.samples.splice(sampleIndex, 1);
+        data[key] = data[key].filter((item) => item.samples?.length > 0);
+      } else {
+        data[key] = data[key].filter((entry) => entry.label !== label);
+      }
+
       await writeGlobalData(data);
       sendJson(response, 200, data);
       return;

@@ -6,6 +6,7 @@ const flipButton = document.querySelector("#flipButton");
 const modeButton = document.querySelector("#modeButton");
 const clearPhraseButton = document.querySelector("#clearPhraseButton");
 const adminToggleButton = document.querySelector("#adminToggleButton");
+const resetLocalButton = document.querySelector("#resetLocalButton");
 const adminLoginPanel = document.querySelector("#adminLoginPanel");
 const adminUserInput = document.querySelector("#adminUserInput");
 const adminPasswordInput = document.querySelector("#adminPasswordInput");
@@ -17,6 +18,10 @@ const saveButton = document.querySelector("#saveButton");
 const captureLetterButton = document.querySelector("#captureLetterButton");
 const captureLetterMotionButton = document.querySelector("#captureLetterMotionButton");
 const saveLetterButton = document.querySelector("#saveLetterButton");
+const motionDelaySelect = document.querySelector("#motionDelaySelect");
+const letterMotionDelaySelect = document.querySelector("#letterMotionDelaySelect");
+const motionDurationSelect = document.querySelector("#motionDurationSelect");
+const letterMotionDurationSelect = document.querySelector("#letterMotionDurationSelect");
 const signNameInput = document.querySelector("#signNameInput");
 const signScopeText = document.querySelector("#signScopeText");
 const signSearchInput = document.querySelector("#signSearchInput");
@@ -25,6 +30,7 @@ const letterScopeText = document.querySelector("#letterScopeText");
 const letterSearchInput = document.querySelector("#letterSearchInput");
 const modelStatus = document.querySelector("#modelStatus");
 const cameraEmpty = document.querySelector("#cameraEmpty");
+const motionCountdown = document.querySelector("#motionCountdown");
 const translationText = document.querySelector("#translationText");
 const confidenceText = document.querySelector("#confidenceText");
 const phraseText = document.querySelector("#phraseText");
@@ -40,6 +46,8 @@ const letterList = document.querySelector("#letterList");
 
 const STORAGE_KEY = "vinculacion.lsec.samples.v1";
 const LETTER_STORAGE_KEY = "vinculacion.lsec.letters.v1";
+const HIDDEN_GLOBAL_SIGNS_KEY = "vinculacion.lsec.hiddenGlobalSigns.v1";
+const HIDDEN_GLOBAL_LETTERS_KEY = "vinculacion.lsec.hiddenGlobalLetters.v1";
 const ADMIN_TOKEN_KEY = "vinculacion.lsec.adminToken.v1";
 const HOLD_TO_APPEND_MS = 1100;
 const CUSTOM_MATCH_THRESHOLD = 0.19;
@@ -51,6 +59,7 @@ const MIN_MOTION_FRAMES = 4;
 const MOTION_RESAMPLE_FRAMES = 12;
 const SEARCH_ENABLE_THRESHOLD = 5;
 const HAND_VECTOR_SIZE = 63;
+const HEAD_FEATURE_SIZE = 5;
 const FACE_LANDMARK_INDICES = [
   10, 33, 61, 78, 133, 152, 159, 145, 263, 291, 308, 362, 386, 374
 ];
@@ -104,9 +113,12 @@ let customSigns = loadSigns();
 let customLetters = loadLetters();
 let globalSigns = [];
 let globalLetters = [];
+let hiddenGlobalSigns = loadStringList(HIDDEN_GLOBAL_SIGNS_KEY);
+let hiddenGlobalLetters = loadStringList(HIDDEN_GLOBAL_LETTERS_KEY);
 let adminToken = sessionStorage.getItem(ADMIN_TOKEN_KEY) ?? "";
 let mode = "words";
 let motionRecording = null;
+let motionCountdownState = null;
 let recentMotionFrames = [];
 
 const baseTranslations = {
@@ -206,6 +218,27 @@ clearPhraseButton.addEventListener("click", () => {
   phraseText.textContent = "";
 });
 
+resetLocalButton.addEventListener("click", async () => {
+  localStorage.removeItem(STORAGE_KEY);
+  localStorage.removeItem(LETTER_STORAGE_KEY);
+  localStorage.removeItem(HIDDEN_GLOBAL_SIGNS_KEY);
+  localStorage.removeItem(HIDDEN_GLOBAL_LETTERS_KEY);
+  customSigns = [];
+  customLetters = [];
+  hiddenGlobalSigns = [];
+  hiddenGlobalLetters = [];
+  pendingSamples = [];
+  pendingLetterSamples = [];
+  phrase = [];
+  phraseText.textContent = "";
+  sampleCounter.textContent = "0 muestras listas";
+  letterSampleCounter.textContent = "0 muestras de letra";
+  renderPendingSamples("sign");
+  renderPendingSamples("letter");
+  await loadGlobalData();
+  adminStatusText.textContent = "Datos locales reiniciados. Se mantienen las muestras globales del servidor.";
+});
+
 signSearchInput.addEventListener("input", renderSignList);
 letterSearchInput.addEventListener("input", renderLetterList);
 
@@ -240,7 +273,7 @@ captureButton.addEventListener("click", () => {
     sampleCounter.textContent = "No hay mano ni rostro detectado para capturar";
     return;
   }
-  pendingSamples.push({ kind: "pose", vector });
+  pendingSamples.push(withSampleTimestamp({ kind: "pose", vector }));
   sampleCounter.textContent = `${pendingSamples.length} muestras listas`;
   renderPendingSamples("sign");
 });
@@ -255,7 +288,7 @@ captureLetterButton.addEventListener("click", () => {
     letterSampleCounter.textContent = "No hay mano ni rostro detectado para capturar";
     return;
   }
-  pendingLetterSamples.push({ kind: "pose", vector });
+  pendingLetterSamples.push(withSampleTimestamp({ kind: "pose", vector }));
   letterSampleCounter.textContent = `${pendingLetterSamples.length} muestras de letra`;
   renderPendingSamples("letter");
 });
@@ -340,6 +373,7 @@ async function startCamera() {
 
 function stopCamera() {
   running = false;
+  cancelMotionCountdown();
   stopMotionCapture(true);
   stream?.getTracks().forEach((track) => track.stop());
   stream = null;
@@ -494,7 +528,7 @@ function classifyLetter(gestureResult, fullVector = null) {
 }
 
 function classifyCustomLetter(vector, gestureResult = null) {
-  const letters = [...globalLetters, ...customLetters];
+  const letters = [...visibleGlobalLetters(), ...customLetters];
   if (!vector || letters.length === 0) return null;
   let best = { label: "", distance: Infinity };
 
@@ -617,33 +651,111 @@ function currentVector(gestureResult = null, faceResult = null) {
 }
 
 function toggleMotionCapture(type) {
+  if (motionCountdownState?.type === type) {
+    cancelMotionCountdown();
+    return;
+  }
   if (motionRecording?.type === type) {
     stopMotionCapture(false);
     return;
   }
   if (motionRecording) stopMotionCapture(true);
+  if (motionCountdownState) cancelMotionCountdown();
   if (!running) {
     const target = type === "letter" ? letterSampleCounter : sampleCounter;
     target.textContent = "Inicia la camara antes de grabar movimiento";
     return;
   }
 
+  const delay = motionDelayFor(type);
+  if (delay > 0) {
+    startMotionCountdown(type, delay);
+    return;
+  }
+
+  beginMotionRecording(type);
+}
+
+function beginMotionRecording(type) {
+  const duration = motionDurationFor(type);
   motionRecording = {
     type,
     startedAt: performance.now(),
     lastFrameAt: 0,
-    frames: []
+    frames: [],
+    durationMs: duration * 1000,
+    stopTimer: null
   };
   const button = type === "letter" ? captureLetterMotionButton : captureMotionButton;
   button.classList.add("recording");
-  button.textContent = "Detener movimiento";
+  button.textContent = duration > 0 ? "Grabando..." : "Detener movimiento";
+  if (duration > 0) {
+    motionCountdown.classList.remove("hidden");
+    motionCountdown.textContent = String(duration);
+    motionRecording.stopTimer = setTimeout(() => stopMotionCapture(false), duration * 1000);
+  }
   updateMotionStatus(performance.now());
+}
+
+function startMotionCountdown(type, seconds) {
+  const button = type === "letter" ? captureLetterMotionButton : captureMotionButton;
+  const counter = type === "letter" ? letterSampleCounter : sampleCounter;
+  const timers = [];
+  motionCountdownState = { type, timers };
+  button.classList.add("recording");
+  button.textContent = "Cancelar espera";
+  motionCountdown.classList.remove("hidden");
+
+  for (let remaining = seconds; remaining >= 0; remaining -= 1) {
+    timers.push(setTimeout(() => {
+      if (!motionCountdownState || motionCountdownState.type !== type) return;
+      motionCountdown.textContent = String(remaining);
+      counter.textContent = remaining > 0
+        ? `Grabacion inicia en ${remaining} s`
+        : "Grabando movimiento...";
+    }, (seconds - remaining) * 1000));
+  }
+
+  timers.push(setTimeout(() => {
+    if (!motionCountdownState || motionCountdownState.type !== type) return;
+    motionCountdownState = null;
+    motionCountdown.classList.add("hidden");
+    button.classList.remove("recording");
+    beginMotionRecording(type);
+  }, seconds * 1000 + 350));
+}
+
+function cancelMotionCountdown() {
+  if (!motionCountdownState) return;
+  const { type, timers } = motionCountdownState;
+  for (const timer of timers) clearTimeout(timer);
+  motionCountdownState = null;
+  motionCountdown.classList.add("hidden");
+  const button = type === "letter" ? captureLetterMotionButton : captureMotionButton;
+  const counter = type === "letter" ? letterSampleCounter : sampleCounter;
+  button.classList.remove("recording");
+  button.textContent = "Captura con movimiento";
+  counter.textContent = type === "letter"
+    ? `${pendingLetterSamples.length} muestras de letra`
+    : `${pendingSamples.length} muestras listas`;
+}
+
+function motionDelayFor(type) {
+  const select = type === "letter" ? letterMotionDelaySelect : motionDelaySelect;
+  return Math.max(0, Math.min(10, Number(select.value) || 0));
+}
+
+function motionDurationFor(type) {
+  const select = type === "letter" ? letterMotionDurationSelect : motionDurationSelect;
+  return Math.max(0, Math.min(10, Number(select.value) || 0));
 }
 
 function stopMotionCapture(cancelled) {
   if (!motionRecording) return;
   const recording = motionRecording;
   motionRecording = null;
+  if (recording.stopTimer) clearTimeout(recording.stopTimer);
+  motionCountdown.classList.add("hidden");
 
   const button = recording.type === "letter" ? captureLetterMotionButton : captureMotionButton;
   const counter = recording.type === "letter" ? letterSampleCounter : sampleCounter;
@@ -666,6 +778,7 @@ function stopMotionCapture(cancelled) {
 
   pending.push({
     kind: "motion",
+    ...sampleTimestamp(),
     duration: recording.frames.at(-1).time - recording.frames[0].time,
     frames: recording.frames.map((frame) => frame.vector)
   });
@@ -692,6 +805,13 @@ function updateMotionStatus(now) {
   if (!motionRecording) return;
   const seconds = Math.max(0, (now - motionRecording.startedAt) / 1000);
   const counter = motionRecording.type === "letter" ? letterSampleCounter : sampleCounter;
+  if (motionRecording.durationMs > 0) {
+    const remaining = Math.max(0, Math.ceil((motionRecording.durationMs - (now - motionRecording.startedAt)) / 1000));
+    motionCountdown.classList.remove("hidden");
+    motionCountdown.textContent = String(remaining);
+    counter.textContent = `Grabando movimiento: ${seconds.toFixed(1)} s - termina en ${remaining} s`;
+    return;
+  }
   counter.textContent = `Grabando movimiento: ${seconds.toFixed(1)} s`;
 }
 
@@ -706,16 +826,33 @@ function normalizeFace(faceResult) {
   const landmarks = faceResult?.faceLandmarks?.[0];
   const blendshapes = faceResult?.faceBlendshapes?.[0]?.categories ?? [];
   const blendshapeMap = new Map(blendshapes.map((item) => [item.categoryName, item.score ?? 0]));
+  const emptyHead = Array(HEAD_FEATURE_SIZE).fill(0);
   const emptyLandmarks = Array(FACE_LANDMARK_INDICES.length * 3).fill(0);
   const emptyBlendshapes = Array(FACE_BLENDSHAPE_NAMES.length).fill(0);
 
   if (!landmarks) {
-    return { present: false, values: [...emptyLandmarks, ...emptyBlendshapes] };
+    return { present: false, values: [...emptyHead, ...emptyLandmarks, ...emptyBlendshapes] };
   }
 
   const center = landmarks[1] ?? landmarks[0];
   const chin = landmarks[152] ?? center;
+  const leftEye = landmarks[33] ?? center;
+  const rightEye = landmarks[263] ?? center;
+  const forehead = landmarks[10] ?? center;
   const scale = Math.hypot(chin.x - center.x, chin.y - center.y, chin.z - center.z) || 1;
+  const eyeCenter = {
+    x: (leftEye.x + rightEye.x) / 2,
+    y: (leftEye.y + rightEye.y) / 2,
+    z: (leftEye.z + rightEye.z) / 2
+  };
+  const eyeDistance = Math.hypot(rightEye.x - leftEye.x, rightEye.y - leftEye.y, rightEye.z - leftEye.z) || scale;
+  const headValues = [
+    (center.x - eyeCenter.x) / eyeDistance,
+    (center.y - eyeCenter.y) / scale,
+    (center.z - eyeCenter.z) / eyeDistance,
+    Math.atan2(rightEye.y - leftEye.y, rightEye.x - leftEye.x),
+    (forehead.y - chin.y) / scale
+  ];
   const landmarkValues = FACE_LANDMARK_INDICES.flatMap((index) => {
     const point = landmarks[index] ?? center;
     return [
@@ -726,18 +863,18 @@ function normalizeFace(faceResult) {
   });
   const blendshapeValues = FACE_BLENDSHAPE_NAMES.map((name) => blendshapeMap.get(name) ?? 0);
 
-  return { present: true, values: [...landmarkValues, ...blendshapeValues] };
+  return { present: true, values: [...headValues, ...landmarkValues, ...blendshapeValues] };
 }
 
 function classifyCustom(vector, gestureResult = null) {
-  const signs = [...globalSigns, ...customSigns];
+  const signs = [...visibleGlobalSigns(), ...customSigns];
   if (!vector || signs.length === 0) return null;
   let best = { label: "", distance: Infinity };
   const legacyHandVector = currentHandVector(gestureResult);
 
   for (const sign of signs) {
     for (const sample of sign.samples) {
-      const distance = sampleDistance(vector, sample, gestureResult, legacyHandVector);
+      const distance = sampleDistance(vector, sample, gestureResult, legacyHandVector, { useHeadMotion: true });
       if (distance < best.distance) best = { label: sign.label, distance };
     }
   }
@@ -746,9 +883,9 @@ function classifyCustom(vector, gestureResult = null) {
   return { label: best.label, score };
 }
 
-function sampleDistance(vector, sample, gestureResult = null, legacyHandVector = null) {
+function sampleDistance(vector, sample, gestureResult = null, legacyHandVector = null, options = {}) {
   if (sample?.kind === "motion" && Array.isArray(sample.frames)) {
-    return motionDistance(currentMotionSequence(), sample.frames);
+    return motionDistance(currentMotionSequence(), sample.frames, options);
   }
 
   const sampleVector = sample?.kind === "pose" && Array.isArray(sample.vector)
@@ -767,16 +904,32 @@ function currentMotionSequence() {
   return recentMotionFrames.map((frame) => frame.vector);
 }
 
-function motionDistance(currentFrames, sampleFrames) {
+function motionDistance(currentFrames, sampleFrames, options = {}) {
   if (!currentFrames || !sampleFrames || currentFrames.length < MIN_MOTION_FRAMES) return Infinity;
   const current = resampleFrames(currentFrames, MOTION_RESAMPLE_FRAMES);
   const sample = resampleFrames(sampleFrames, MOTION_RESAMPLE_FRAMES);
   let total = 0;
 
   for (let index = 0; index < MOTION_RESAMPLE_FRAMES; index += 1) {
-    total += euclideanDistance(current[index], sample[index]);
+    total += options.useHeadMotion
+      ? signMotionFrameDistance(current[index], sample[index])
+      : euclideanDistance(current[index], sample[index]);
   }
   return total / MOTION_RESAMPLE_FRAMES;
+}
+
+function signMotionFrameDistance(currentFrame, sampleFrame) {
+  const baseDistance = euclideanDistance(currentFrame, sampleFrame);
+  const headDistance = euclideanDistance(headFeatures(currentFrame), headFeatures(sampleFrame));
+  if (!Number.isFinite(headDistance)) return baseDistance;
+  return (baseDistance * 0.55) + (headDistance * 0.45);
+}
+
+function headFeatures(vector) {
+  if (!Array.isArray(vector)) return [];
+  const faceStart = 2 + (HAND_VECTOR_SIZE * 2);
+  if (vector[faceStart] !== 1) return Array(HEAD_FEATURE_SIZE).fill(0);
+  return vector.slice(faceStart + 1, faceStart + 1 + HEAD_FEATURE_SIZE);
 }
 
 function resampleFrames(frames, targetCount) {
@@ -919,6 +1072,27 @@ async function deleteGlobalItem(type, label) {
   }
 }
 
+async function deleteGlobalSample(type, label, sampleIndex) {
+  try {
+    const response = await fetch(`/api/global-data?type=${type}&label=${encodeURIComponent(label)}&sampleIndex=${sampleIndex}`, {
+      method: "DELETE",
+      headers: { "Authorization": `Bearer ${adminToken}` }
+    });
+    const data = await response.json();
+    if (!response.ok) {
+      adminStatusText.textContent = data.error ?? "No se pudo borrar la muestra global";
+      return;
+    }
+    globalSigns = Array.isArray(data.signs) ? data.signs : [];
+    globalLetters = Array.isArray(data.letters) ? data.letters : [];
+    renderSignList();
+    renderLetterList();
+  } catch (error) {
+    console.error(error);
+    adminStatusText.textContent = "No se pudo conectar para borrar la muestra global";
+  }
+}
+
 function updateAdminUi() {
   const isAdmin = Boolean(adminToken);
   adminLoginPanel.classList.toggle("hidden", isAdmin);
@@ -928,6 +1102,38 @@ function updateAdminUi() {
     : "Modo local: tus cambios solo quedan en esta computadora.";
   signScopeText.textContent = isAdmin ? "Guardado global" : "Guardado local";
   letterScopeText.textContent = isAdmin ? "Guardado global" : "Guardado local";
+  renderSignList();
+  renderLetterList();
+}
+
+function withSampleTimestamp(sample) {
+  return { ...sample, ...sampleTimestamp() };
+}
+
+function sampleTimestamp(date = new Date()) {
+  return {
+    capturedAt: date.toISOString(),
+    capturedAtLabel: date.toLocaleTimeString("es-EC", {
+      hour: "2-digit",
+      minute: "2-digit",
+      second: "2-digit"
+    })
+  };
+}
+
+function sampleTimeLabel(sample) {
+  if (sample?.capturedAtLabel) return sample.capturedAtLabel;
+  if (sample?.capturedAt) {
+    const date = new Date(sample.capturedAt);
+    if (!Number.isNaN(date.getTime())) {
+      return date.toLocaleTimeString("es-EC", {
+        hour: "2-digit",
+        minute: "2-digit",
+        second: "2-digit"
+      });
+    }
+  }
+  return "sin hora";
 }
 
 function renderPendingSamples(type) {
@@ -942,8 +1148,8 @@ function renderPendingSamples(type) {
   samples.forEach((sample, index) => {
     const item = document.createElement("div");
     item.className = "sample-chip";
-    const kind = sample.kind === "motion" ? "movimiento" : "pose";
-    item.innerHTML = `<span>Muestra ${index + 1}: ${kind}</span>`;
+    const text = document.createElement("span");
+    text.textContent = `Muestra ${index + 1} - ${sampleTimeLabel(sample)}`;
     const removeButton = document.createElement("button");
     removeButton.type = "button";
     removeButton.textContent = "Quitar";
@@ -954,7 +1160,7 @@ function renderPendingSamples(type) {
         : `${samples.length} muestras listas`;
       renderPendingSamples(type);
     });
-    item.append(removeButton);
+    item.append(text, removeButton);
     list.append(item);
   });
 }
@@ -962,10 +1168,10 @@ function renderPendingSamples(type) {
 function renderSignList() {
   signList.innerHTML = "";
   const allSigns = [
-    ...globalSigns.map((item) => ({ ...item, scope: "global" })),
+    ...visibleGlobalSigns().map((item) => ({ ...item, scope: "global" })),
     ...customSigns.map((item) => ({ ...item, scope: "local" }))
   ];
-  const canSearch = allSigns.length > SEARCH_ENABLE_THRESHOLD;
+  const canSearch = allSigns.length > 0;
   signSearchInput.disabled = !canSearch;
   if (!canSearch) signSearchInput.value = "";
 
@@ -978,6 +1184,7 @@ function renderSignList() {
   const visibleSigns = query
     ? allSigns.filter((sign) => sign.label.toLowerCase().includes(query))
     : allSigns;
+  visibleSigns.sort(compareByLabel);
 
   if (visibleSigns.length === 0) {
     signList.innerHTML = '<p class="helper">No hay senias que coincidan con la busqueda.</p>';
@@ -985,24 +1192,96 @@ function renderSignList() {
   }
 
   for (const sign of visibleSigns) {
-    const chip = document.createElement("div");
-    chip.className = "sign-chip";
-    chip.innerHTML = `<span>${sign.label} (${sign.samples.length}) <small>${sign.scope}</small></span>`;
+    const chip = document.createElement("details");
+    chip.className = "sign-chip saved-entry";
+    const summary = document.createElement("summary");
+    const title = document.createElement("span");
+    title.innerHTML = `${sign.label} (${sign.samples.length}) <small>${sign.scope}</small>`;
     const removeButton = document.createElement("button");
     removeButton.type = "button";
     removeButton.textContent = "Borrar";
+    removeButton.addEventListener("click", (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      removeSignEntry(sign);
+    });
+    summary.append(title, removeButton);
+    chip.append(summary, renderSavedSamples("signs", sign));
+    signList.append(chip);
+  }
+}
+
+function removeSignEntry(sign) {
+  if (sign.scope === "global") {
+    if (adminToken) {
+      deleteGlobalItem("signs", sign.label);
+    } else {
+      hiddenGlobalSigns = uniqueStrings([...hiddenGlobalSigns, sign.label]);
+      saveStringList(HIDDEN_GLOBAL_SIGNS_KEY, hiddenGlobalSigns);
+      adminStatusText.textContent = "Muestra global ocultada solo en este navegador.";
+      renderSignList();
+    }
+    return;
+  }
+  customSigns = customSigns.filter((item) => item.label !== sign.label);
+  saveSigns(customSigns);
+  renderSignList();
+}
+
+function renderSavedSamples(type, entry) {
+  const list = document.createElement("div");
+  list.className = "saved-sample-list";
+  if (!Array.isArray(entry.samples) || entry.samples.length === 0) {
+    const empty = document.createElement("p");
+    empty.className = "helper";
+    empty.textContent = "No quedan muestras en esta entrada.";
+    list.append(empty);
+    return list;
+  }
+
+  entry.samples.forEach((sample, index) => {
+    const item = document.createElement("div");
+    item.className = "sample-chip saved-sample-chip";
+    const label = document.createElement("span");
+    label.textContent = `Muestra ${index + 1} - ${sampleTimeLabel(sample)}`;
+    const removeButton = document.createElement("button");
+    removeButton.type = "button";
+    removeButton.textContent = "Quitar";
+    if (entry.scope === "global" && !adminToken) {
+      removeButton.disabled = true;
+      removeButton.title = "Solo el administrador puede quitar muestras globales.";
+    }
     removeButton.addEventListener("click", () => {
-      if (sign.scope === "global") {
-        if (adminToken) deleteGlobalItem("signs", sign.label);
+      if (entry.scope === "global") {
+        if (adminToken) {
+          deleteGlobalSample(type, entry.label, index);
+        } else {
+          adminStatusText.textContent = "En modo local solo puedes quitar tus muestras locales.";
+        }
         return;
       }
-      customSigns = customSigns.filter((item) => item.label !== sign.label);
-      saveSigns(customSigns);
-      renderSignList();
+      removeLocalSample(type, entry.label, index);
     });
-    removeButton.disabled = sign.scope === "global" && !adminToken;
-    chip.append(removeButton);
-    signList.append(chip);
+    item.append(label, removeButton);
+    list.append(item);
+  });
+  return list;
+}
+
+function removeLocalSample(type, label, index) {
+  const collection = type === "letters" ? customLetters : customSigns;
+  const entry = collection.find((item) => item.label === label);
+  if (!entry || !Array.isArray(entry.samples)) return;
+  entry.samples.splice(index, 1);
+  const remaining = collection.filter((item) => item.samples?.length > 0);
+  if (type === "letters") {
+    customLetters = remaining;
+    saveLetters(customLetters);
+    renderLetterList();
+  } else {
+    customSigns = remaining;
+    saveSigns(customSigns);
+    renderSignList();
   }
 }
 
@@ -1019,10 +1298,10 @@ function renderLetterSelect() {
 function renderLetterList() {
   letterList.innerHTML = "";
   const allLetters = [
-    ...globalLetters.map((item) => ({ ...item, scope: "global" })),
+    ...visibleGlobalLetters().map((item) => ({ ...item, scope: "global" })),
     ...customLetters.map((item) => ({ ...item, scope: "local" }))
   ];
-  const canSearch = allLetters.length > SEARCH_ENABLE_THRESHOLD;
+  const canSearch = allLetters.length > 0;
   letterSearchInput.disabled = !canSearch;
   if (!canSearch) letterSearchInput.value = "";
 
@@ -1035,6 +1314,7 @@ function renderLetterList() {
   const visibleLetters = query
     ? allLetters.filter((letter) => letter.label.toLowerCase().includes(query))
     : allLetters;
+  visibleLetters.sort(compareByLabel);
 
   if (visibleLetters.length === 0) {
     letterList.innerHTML = '<p class="helper">No hay letras que coincidan con la busqueda.</p>';
@@ -1042,25 +1322,58 @@ function renderLetterList() {
   }
 
   for (const letter of visibleLetters) {
-    const chip = document.createElement("div");
-    chip.className = "sign-chip";
-    chip.innerHTML = `<span>${letter.label} (${letter.samples.length}) <small>${letter.scope}</small></span>`;
+    const chip = document.createElement("details");
+    chip.className = "sign-chip saved-entry";
+    const summary = document.createElement("summary");
+    const title = document.createElement("span");
+    title.innerHTML = `${letter.label} (${letter.samples.length}) <small>${letter.scope}</small>`;
     const removeButton = document.createElement("button");
     removeButton.type = "button";
     removeButton.textContent = "Borrar";
-    removeButton.addEventListener("click", () => {
-      if (letter.scope === "global") {
-        if (adminToken) deleteGlobalItem("letters", letter.label);
-        return;
-      }
-      customLetters = customLetters.filter((item) => item.label !== letter.label);
-      saveLetters(customLetters);
-      renderLetterList();
+    removeButton.addEventListener("click", (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      removeLetterEntry(letter);
     });
-    removeButton.disabled = letter.scope === "global" && !adminToken;
-    chip.append(removeButton);
+    summary.append(title, removeButton);
+    chip.append(summary, renderSavedSamples("letters", letter));
     letterList.append(chip);
   }
+}
+
+function removeLetterEntry(letter) {
+  if (letter.scope === "global") {
+    if (adminToken) {
+      deleteGlobalItem("letters", letter.label);
+    } else {
+      hiddenGlobalLetters = uniqueStrings([...hiddenGlobalLetters, letter.label]);
+      saveStringList(HIDDEN_GLOBAL_LETTERS_KEY, hiddenGlobalLetters);
+      adminStatusText.textContent = "Letra global ocultada solo en este navegador.";
+      renderLetterList();
+    }
+    return;
+  }
+  customLetters = customLetters.filter((item) => item.label !== letter.label);
+  saveLetters(customLetters);
+  renderLetterList();
+}
+
+function compareByLabel(a, b) {
+  return a.label.localeCompare(b.label, "es", { sensitivity: "base", numeric: true });
+}
+
+function visibleGlobalSigns() {
+  if (adminToken) return globalSigns;
+  return globalSigns.filter((item) => !hiddenGlobalSigns.includes(item.label));
+}
+
+function visibleGlobalLetters() {
+  if (adminToken) return globalLetters;
+  return globalLetters.filter((item) => !hiddenGlobalLetters.includes(item.label));
+}
+
+function uniqueStrings(values) {
+  return [...new Set(values.filter(Boolean))];
 }
 
 function loadSigns() {
@@ -1085,4 +1398,17 @@ function loadLetters() {
 
 function saveLetters(letters) {
   localStorage.setItem(LETTER_STORAGE_KEY, JSON.stringify(letters));
+}
+
+function loadStringList(key) {
+  try {
+    const value = JSON.parse(localStorage.getItem(key));
+    return Array.isArray(value) ? value.filter((item) => typeof item === "string") : [];
+  } catch {
+    return [];
+  }
+}
+
+function saveStringList(key, values) {
+  localStorage.setItem(key, JSON.stringify(uniqueStrings(values)));
 }

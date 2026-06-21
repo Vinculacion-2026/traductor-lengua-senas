@@ -16,6 +16,7 @@
           </div>
           <div class="top-actions">
             <button id="adminToggleButton" type="button" class="secondary">Inicio de sesion administrador</button>
+            <button id="resetLocalButton" type="button" class="secondary">Reiniciar local</button>
             <div class="status" id="modelStatus">Cargando modelos...</div>
           </div>
         </header>
@@ -36,6 +37,7 @@
         <div class="stage">
           <video id="webcam" autoplay playsinline muted></video>
           <canvas id="overlay"></canvas>
+          <div class="motion-countdown hidden" id="motionCountdown">0</div>
           <div class="camera-empty" id="cameraEmpty">
             <strong>Activa la camara</strong>
             <span>El tracking se ejecuta localmente en tu navegador.</span>
@@ -61,64 +63,121 @@
           <div class="phrase" id="phraseText"></div>
         </section>
 
-        <section class="panel">
-          <div class="panel-heading">
-            <h2>Entrenar senia Ecuador</h2>
-          </div>
-          <label class="field">
-            <span>Nombre de la senia</span>
-            <input id="signNameInput" type="text" placeholder="Ej: gracias, agua, ayuda" />
-          </label>
-          <p class="scope-status" id="signScopeText">Guardado local</p>
-          <div class="train-actions">
-            <button id="captureButton" type="button">Capturar muestra</button>
-            <button id="captureMotionButton" type="button" class="secondary">Captura con movimiento</button>
-            <button id="saveButton" type="button">Guardar senia</button>
-          </div>
-          <p class="helper" id="sampleCounter">0 muestras listas</p>
-          <div class="sample-list" id="pendingSampleList"></div>
-          <label class="field search-field">
-            <span>Buscar senia guardada</span>
-            <input id="signSearchInput" type="search" placeholder="Buscar palabra o frase" disabled />
-          </label>
-          <div class="sign-list" id="signList"></div>
-        </section>
+        <div class="training-grid">
+          <details class="panel train-panel" open>
+            <summary>
+              <span>Entrenar senia Ecuador</span>
+              <small>Palabras y frases</small>
+            </summary>
+            <label class="field">
+              <span>Nombre de la senia</span>
+              <input id="signNameInput" type="text" placeholder="Ej: gracias, agua, ayuda" />
+            </label>
+            <p class="scope-status" id="signScopeText">Guardado local</p>
+            <label class="field motion-delay-field">
+              <span>Esperar antes de grabar movimiento</span>
+              <select id="motionDelaySelect" aria-label="Espera para grabar movimiento">
+                <option value="0">0 segundos</option>
+                <option value="1">1 segundo</option>
+                <option value="2">2 segundos</option>
+                <option value="3">3 segundos</option>
+                <option value="4">4 segundos</option>
+                <option value="5">5 segundos</option>
+                <option value="6">6 segundos</option>
+                <option value="7">7 segundos</option>
+                <option value="8">8 segundos</option>
+                <option value="9">9 segundos</option>
+                <option value="10">10 segundos</option>
+              </select>
+            </label>
+            <label class="field motion-delay-field">
+              <span>Detener grabacion automaticamente</span>
+              <select id="motionDurationSelect" aria-label="Duracion para grabar movimiento">
+                <option value="0">Manual</option>
+                <option value="1">1 segundo</option>
+                <option value="2">2 segundos</option>
+                <option value="3">3 segundos</option>
+                <option value="4">4 segundos</option>
+                <option value="5">5 segundos</option>
+                <option value="6">6 segundos</option>
+                <option value="7">7 segundos</option>
+                <option value="8">8 segundos</option>
+                <option value="9">9 segundos</option>
+                <option value="10">10 segundos</option>
+              </select>
+            </label>
+            <div class="train-actions">
+              <button id="captureButton" type="button">Capturar muestra</button>
+              <button id="captureMotionButton" type="button" class="secondary">Captura con movimiento</button>
+              <button id="saveButton" type="button">Guardar senia</button>
+            </div>
+            <p class="helper" id="sampleCounter">0 muestras listas</p>
+            <div class="sample-list" id="pendingSampleList"></div>
+            <label class="field search-field">
+              <span>Buscar senia guardada</span>
+              <input id="signSearchInput" type="search" placeholder="Buscar palabra o frase" disabled />
+            </label>
+            <div class="sign-list" id="signList"></div>
+          </details>
 
-        <section class="panel">
-          <div class="panel-heading">
-            <h2>Abecedario LSEC</h2>
-            <span id="letterStatus">LSEC</span>
-          </div>
-          <p class="letter-output" id="letterOutput">--</p>
-          <label class="field">
-            <span>Letra o sonido para entrenar</span>
-            <select id="letterSelect" aria-label="Letra para entrenar"></select>
-          </label>
-          <p class="scope-status" id="letterScopeText">Guardado local</p>
-          <div class="train-actions">
-            <button id="captureLetterButton" type="button">Capturar letra</button>
-            <button id="captureLetterMotionButton" type="button" class="secondary">Captura con movimiento</button>
-            <button id="saveLetterButton" type="button">Guardar letra</button>
-          </div>
-          <p class="helper" id="letterSampleCounter">0 muestras de letra</p>
-          <div class="sample-list" id="pendingLetterSampleList"></div>
-          <label class="field search-field">
-            <span>Buscar letra guardada</span>
-            <input id="letterSearchInput" type="search" placeholder="Buscar letra o sonido" disabled />
-          </label>
-          <div class="sign-list" id="letterList"></div>
-        </section>
+          <details class="panel train-panel" open>
+            <summary>
+              <span>Abecedario LSEC</span>
+              <small id="letterStatus">LSEC</small>
+            </summary>
+            <p class="letter-output" id="letterOutput">--</p>
+            <label class="field">
+              <span>Letra o sonido para entrenar</span>
+              <select id="letterSelect" aria-label="Letra para entrenar"></select>
+            </label>
+            <p class="scope-status" id="letterScopeText">Guardado local</p>
+            <label class="field motion-delay-field">
+              <span>Esperar antes de grabar movimiento</span>
+              <select id="letterMotionDelaySelect" aria-label="Espera para grabar movimiento de letra">
+                <option value="0">0 segundos</option>
+                <option value="1">1 segundo</option>
+                <option value="2">2 segundos</option>
+                <option value="3">3 segundos</option>
+                <option value="4">4 segundos</option>
+                <option value="5">5 segundos</option>
+                <option value="6">6 segundos</option>
+                <option value="7">7 segundos</option>
+                <option value="8">8 segundos</option>
+                <option value="9">9 segundos</option>
+                <option value="10">10 segundos</option>
+              </select>
+            </label>
+            <label class="field motion-delay-field">
+              <span>Detener grabacion automaticamente</span>
+              <select id="letterMotionDurationSelect" aria-label="Duracion para grabar movimiento de letra">
+                <option value="0">Manual</option>
+                <option value="1">1 segundo</option>
+                <option value="2">2 segundos</option>
+                <option value="3">3 segundos</option>
+                <option value="4">4 segundos</option>
+                <option value="5">5 segundos</option>
+                <option value="6">6 segundos</option>
+                <option value="7">7 segundos</option>
+                <option value="8">8 segundos</option>
+                <option value="9">9 segundos</option>
+                <option value="10">10 segundos</option>
+              </select>
+            </label>
+            <div class="train-actions">
+              <button id="captureLetterButton" type="button">Capturar letra</button>
+              <button id="captureLetterMotionButton" type="button" class="secondary">Captura con movimiento</button>
+              <button id="saveLetterButton" type="button">Guardar letra</button>
+            </div>
+            <p class="helper" id="letterSampleCounter">0 muestras de letra</p>
+            <div class="sample-list" id="pendingLetterSampleList"></div>
+            <label class="field search-field">
+              <span>Buscar letra guardada</span>
+              <input id="letterSearchInput" type="search" placeholder="Buscar letra o sonido" disabled />
+            </label>
+            <div class="sign-list" id="letterList"></div>
+          </details>
+        </div>
 
-        <section class="panel compact">
-          <h2>Senias base</h2>
-          <ul>
-            <li>Mano abierta: hola</li>
-            <li>Puno cerrado: si / afirmacion</li>
-            <li>Pulgar arriba: bien</li>
-            <li>Indice arriba: atencion</li>
-            <li>Abecedario: combina reglas y tus muestras</li>
-          </ul>
-        </section>
       </aside>
     </main>
 
