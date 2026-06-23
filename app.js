@@ -34,6 +34,7 @@ const motionCountdown = document.querySelector("#motionCountdown");
 const translationText = document.querySelector("#translationText");
 const confidenceText = document.querySelector("#confidenceText");
 const phraseText = document.querySelector("#phraseText");
+const phraseSuggestionText = document.querySelector("#phraseSuggestionText");
 const fpsLabel = document.querySelector("#fpsLabel");
 const sampleCounter = document.querySelector("#sampleCounter");
 const pendingSampleList = document.querySelector("#pendingSampleList");
@@ -50,11 +51,13 @@ const HIDDEN_GLOBAL_SIGNS_KEY = "vinculacion.lsec.hiddenGlobalSigns.v1";
 const HIDDEN_GLOBAL_LETTERS_KEY = "vinculacion.lsec.hiddenGlobalLetters.v1";
 const ADMIN_TOKEN_KEY = "vinculacion.lsec.adminToken.v1";
 const HOLD_TO_APPEND_MS = 1100;
+const PHRASE_APPEND_THRESHOLD = 0.34;
 const CUSTOM_MATCH_THRESHOLD = 0.19;
 const LETTER_MATCH_THRESHOLD = 0.18;
+const MOTION_LETTER_MATCH_THRESHOLD = 0.12;
 const FACE_EVERY_FRAMES = 2;
 const MOTION_CAPTURE_INTERVAL_MS = 90;
-const MOTION_WINDOW_MS = 2200;
+const MOTION_WINDOW_MS = 3200;
 const MIN_MOTION_FRAMES = 4;
 const MOTION_RESAMPLE_FRAMES = 12;
 const SEARCH_ENABLE_THRESHOLD = 5;
@@ -81,6 +84,7 @@ const ALPHABET = [
   "L", "LL", "LLL", "M", "N", "\u00d1", "O", "P", "Q", "R", "RR",
   "S", "T", "U", "V", "W", "X", "Y", "Z"
 ];
+const MOTION_LETTERS = new Set(["J", "LL", "\u00d1", "RR"]);
 const HAND_CONNECTIONS = [
   [0, 1], [1, 2], [2, 3], [3, 4],
   [0, 5], [5, 6], [6, 7], [7, 8],
@@ -215,7 +219,7 @@ flipButton.addEventListener("click", async () => {
 
 clearPhraseButton.addEventListener("click", () => {
   phrase = [];
-  phraseText.textContent = "";
+  updatePhraseViews();
 });
 
 resetLocalButton.addEventListener("click", async () => {
@@ -230,7 +234,7 @@ resetLocalButton.addEventListener("click", async () => {
   pendingSamples = [];
   pendingLetterSamples = [];
   phrase = [];
-  phraseText.textContent = "";
+  updatePhraseViews();
   sampleCounter.textContent = "0 muestras listas";
   letterSampleCounter.textContent = "0 muestras de letra";
   renderPendingSamples("sign");
@@ -264,7 +268,7 @@ modeButton.addEventListener("click", () => {
   mode = mode === "words" ? "letters" : "words";
   modeButton.textContent = mode === "words" ? "Modo: palabras" : "Modo: abecedario";
   phrase = [];
-  phraseText.textContent = "";
+  updatePhraseViews();
 });
 
 captureButton.addEventListener("click", () => {
@@ -476,7 +480,7 @@ function updatePrediction(gestureResult, faceResult, now) {
       : { label: "Esperando letra...", score: 0 };
     translationText.textContent = activePrediction.label;
     confidenceText.textContent = `Confianza: ${Math.round(activePrediction.score * 100)}%`;
-    maybeAppendPhrase(activePrediction.label, now);
+    maybeAppendPhrase(activePrediction.label, now, activePrediction.score);
     return;
   }
 
@@ -496,7 +500,7 @@ function updatePrediction(gestureResult, faceResult, now) {
 
   translationText.textContent = activePrediction.label;
   confidenceText.textContent = `Confianza: ${Math.round(activePrediction.score * 100)}%`;
-  maybeAppendPhrase(activePrediction.label, now);
+  maybeAppendPhrase(activePrediction.label, now, activePrediction.score);
 }
 
 function classifyBaseGesture(gestureResult) {
@@ -519,7 +523,7 @@ function classifyExpression(faceResult) {
 
 function classifyLetter(gestureResult, fullVector = null) {
   const trained = classifyCustomLetter(fullVector, gestureResult);
-  if (trained && trained.score > LETTER_MATCH_THRESHOLD) return trained;
+  if (trained?.accepted) return trained;
 
   const landmarks = gestureResult?.landmarks?.[0];
   if (!landmarks) return null;
@@ -530,17 +534,35 @@ function classifyLetter(gestureResult, fullVector = null) {
 function classifyCustomLetter(vector, gestureResult = null) {
   const letters = [...visibleGlobalLetters(), ...customLetters];
   if (!vector || letters.length === 0) return null;
-  let best = { label: "", distance: Infinity };
+  let bestPose = { label: "", distance: Infinity };
+  let bestMotion = { label: "", distance: Infinity };
 
   for (const letter of letters) {
     for (const sample of letter.samples) {
-      const distance = sampleDistance(vector, sample, gestureResult);
-      if (distance < best.distance) best = { label: letter.label, distance };
+      const isMotion = sample?.kind === "motion" && Array.isArray(sample.frames);
+      const distance = sampleDistance(vector, sample, gestureResult, null, { useLetterMotion: isMotion });
+      if (isMotion) {
+        if (distance < bestMotion.distance) bestMotion = { label: letter.label, distance };
+      } else if (distance < bestPose.distance) {
+        bestPose = { label: letter.label, distance };
+      }
     }
   }
 
-  const score = Math.max(0, 1 - best.distance / 2.8);
-  return { label: best.label, score };
+  const motionScore = Math.max(0, 1 - bestMotion.distance / 3.2);
+  if (MOTION_LETTERS.has(bestMotion.label) && motionScore > MOTION_LETTER_MATCH_THRESHOLD) {
+    return { label: bestMotion.label, score: motionScore, accepted: true };
+  }
+  if (motionScore > LETTER_MATCH_THRESHOLD + 0.04) {
+    return { label: bestMotion.label, score: motionScore, accepted: true };
+  }
+
+  const poseScore = Math.max(0, 1 - bestPose.distance / 2.8);
+  if (poseScore > LETTER_MATCH_THRESHOLD) {
+    return { label: bestPose.label, score: poseScore, accepted: true };
+  }
+
+  return null;
 }
 
 function classifyLetterByShape(hands) {
@@ -911,11 +933,30 @@ function motionDistance(currentFrames, sampleFrames, options = {}) {
   let total = 0;
 
   for (let index = 0; index < MOTION_RESAMPLE_FRAMES; index += 1) {
-    total += options.useHeadMotion
+    total += options.useLetterMotion
+      ? letterMotionFrameDistance(current[index], sample[index])
+      : options.useHeadMotion
       ? signMotionFrameDistance(current[index], sample[index])
       : euclideanDistance(current[index], sample[index]);
   }
   return total / MOTION_RESAMPLE_FRAMES;
+}
+
+function letterMotionFrameDistance(currentFrame, sampleFrame) {
+  const baseDistance = euclideanDistance(currentFrame, sampleFrame);
+  const handDistance = euclideanDistance(handMotionFeatures(currentFrame), handMotionFeatures(sampleFrame));
+  if (!Number.isFinite(handDistance)) return baseDistance;
+  return (baseDistance * 0.45) + (handDistance * 0.55);
+}
+
+function handMotionFeatures(vector) {
+  if (!Array.isArray(vector)) return [];
+  const firstHandPresent = vector[0] === 1;
+  const secondHandStart = 1 + HAND_VECTOR_SIZE;
+  const secondHandPresent = vector[secondHandStart] === 1;
+  if (firstHandPresent) return vector.slice(1, 1 + HAND_VECTOR_SIZE);
+  if (secondHandPresent) return vector.slice(secondHandStart + 1, secondHandStart + 1 + HAND_VECTOR_SIZE);
+  return Array(HAND_VECTOR_SIZE).fill(0);
 }
 
 function signMotionFrameDistance(currentFrame, sampleFrame) {
@@ -955,8 +996,15 @@ function euclideanDistance(a, b) {
   return Math.sqrt(total / length) + lengthPenalty;
 }
 
-function maybeAppendPhrase(label, now) {
-  if (label === "Esperando senia..." || label === "Esperando letra..." || label.startsWith("expresion:")) {
+function maybeAppendPhrase(label, now, score = 0) {
+  const token = cleanPhraseToken(label);
+  if (
+    label === "Esperando senia..." ||
+    label === "Esperando letra..." ||
+    label.startsWith("expresion:") ||
+    !token ||
+    score < PHRASE_APPEND_THRESHOLD
+  ) {
     holdLabel = "";
     holdStart = 0;
     return;
@@ -968,11 +1016,54 @@ function maybeAppendPhrase(label, now) {
     return;
   }
 
-  if (now - holdStart > HOLD_TO_APPEND_MS && phrase.at(-1) !== label) {
-    phrase.push(label);
-    phraseText.textContent = phrase.join(" ");
+  if (now - holdStart > HOLD_TO_APPEND_MS && phrase.at(-1) !== token) {
+    phrase.push(token);
+    updatePhraseViews();
     holdStart = now + 999999;
   }
+}
+
+function updatePhraseViews() {
+  const rawPhrase = phrase.join(" ");
+  phraseText.textContent = rawPhrase;
+  if (!phraseSuggestionText) return;
+  const suggestion = phrase.length > 0 ? buildPhraseSuggestion(phrase) : "";
+  const suggestionBox = phraseSuggestionText.closest(".phrase-suggestion");
+  if (!suggestion) {
+    phraseSuggestionText.textContent = "";
+    suggestionBox?.classList.add("hidden");
+    return;
+  }
+  phraseSuggestionText.textContent = suggestion;
+  suggestionBox?.classList.remove("hidden");
+}
+
+function buildPhraseSuggestion(tokens) {
+  const cleaned = tokens
+    .map(cleanPhraseToken)
+    .filter(Boolean)
+    .filter((token, index, list) => token !== list[index - 1])
+    .filter((token, index, list) => !isLikelyNoiseToken(token, index, list));
+  if (cleaned.length === 0) return "";
+  const original = tokens.map(cleanPhraseToken).filter(Boolean).join(" ");
+  const phraseTextValue = cleaned.join(" ");
+  if (phraseTextValue === original) return "";
+  return `${phraseTextValue.charAt(0).toUpperCase()}${phraseTextValue.slice(1)}.`;
+}
+
+function isLikelyNoiseToken(token, index, list) {
+  const shortFillers = new Set(["si", "bien", "hola"]);
+  if (list.length <= 2) return false;
+  return shortFillers.has(token) && index > 0 && index < list.length - 1;
+}
+
+function cleanPhraseToken(label) {
+  return String(label)
+    .replace(/^expresion:\s*/i, "")
+    .split("/")
+    .at(0)
+    .trim()
+    .toLowerCase();
 }
 
 function updateFps(now) {

@@ -324,6 +324,32 @@ video {
   line-height: 1.45;
 }
 
+.phrase-suggestion {
+  margin-top: 12px;
+  padding: 12px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #111318;
+}
+
+.phrase-suggestion.hidden {
+  display: none;
+}
+
+.phrase-suggestion span {
+  display: block;
+  margin-bottom: 6px;
+  color: var(--muted);
+  font-size: 0.82rem;
+  font-weight: 800;
+}
+
+.phrase-suggestion p {
+  color: var(--accent);
+  font-weight: 850;
+  line-height: 1.35;
+}
+
 .field {
   display: grid;
   gap: 7px;
