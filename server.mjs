@@ -7,9 +7,10 @@ import { extname, join, normalize } from "node:path";
 const root = process.cwd();
 const port = Number(process.env.PORT ?? 5173);
 loadEnvFile();
-const defaultDataPath = join(root, "data", "global-data.json");
+const host = process.env.HOST ?? (process.env.PORT ? "0.0.0.0" : "127.0.0.1");
 const dataDir = process.env.DATA_DIR ?? join(root, "data");
 const globalDataPath = join(dataDir, "global-data.json");
+const DATA_SCHEMA_VERSION = 2;
 const adminUser = process.env.ADMIN_USER ?? "";
 const adminPassword = process.env.ADMIN_PASSWORD ?? "";
 const adminToken = process.env.ADMIN_TOKEN ?? randomUUID();
@@ -39,14 +40,19 @@ createServer(async (request, response) => {
 
   response.setHeader("Content-Type", types[extname(filePath)] ?? "application/octet-stream");
   createReadStream(filePath).pipe(response);
-}).listen(port, "0.0.0.0", () => {
-  console.log(`VInculacion listo en el puerto ${port}`);
+}).listen(port, host, () => {
+  console.log(`VInculacion listo en http://localhost:${port}`);
 });
 
 async function handleApi(request, response, url) {
   try {
     if (request.method === "GET" && url.pathname === "/api/global-data") {
       sendJson(response, 200, await readGlobalData());
+      return;
+    }
+
+    if (request.method === "GET" && url.pathname === "/api/global-data/export") {
+      sendJson(response, 200, createDbExport(await readGlobalData()));
       return;
     }
 
@@ -81,9 +87,14 @@ async function handleApi(request, response, url) {
       const data = await readGlobalData();
       const existing = data[key].find((entry) => entry.label === item.label);
       if (existing) {
+        existing.id ??= item.id ?? randomUUID();
+        existing.type ??= key === "letters" ? "letter" : "sign";
+        existing.createdAt ??= item.createdAt ?? new Date().toISOString();
         existing.samples.push(...item.samples);
+        existing.updatedAt = new Date().toISOString();
+        existing.schemaVersion = DATA_SCHEMA_VERSION;
       } else {
-        data[key].push(item);
+        data[key].push(normalizeEntryForStorage(item, key));
       }
       await writeGlobalData(data);
       sendJson(response, 200, data);
@@ -109,6 +120,8 @@ async function handleApi(request, response, url) {
           return;
         }
         entry.samples.splice(sampleIndex, 1);
+        entry.updatedAt = new Date().toISOString();
+        entry.schemaVersion = DATA_SCHEMA_VERSION;
         data[key] = data[key].filter((item) => item.samples?.length > 0);
       } else {
         data[key] = data[key].filter((entry) => entry.label !== label);
@@ -128,19 +141,121 @@ async function handleApi(request, response, url) {
 
 async function readGlobalData() {
   try {
-    const raw = await readFile(globalDataPath, "utf8").catch(() => readFile(defaultDataPath, "utf8"));
+    const raw = await readFile(globalDataPath, "utf8");
     const data = JSON.parse(raw);
     return {
+      schemaVersion: data.schemaVersion ?? 1,
       signs: Array.isArray(data.signs) ? data.signs : [],
       letters: Array.isArray(data.letters) ? data.letters : []
     };
   } catch {
-    return { signs: [], letters: [] };
+    return { schemaVersion: DATA_SCHEMA_VERSION, signs: [], letters: [] };
   }
 }
 
 async function writeGlobalData(data) {
-  await writeFile(globalDataPath, `${JSON.stringify(data, null, 2)}\n`, "utf8");
+  await writeFile(globalDataPath, `${JSON.stringify({
+    schemaVersion: DATA_SCHEMA_VERSION,
+    signs: Array.isArray(data.signs) ? data.signs : [],
+    letters: Array.isArray(data.letters) ? data.letters : []
+  }, null, 2)}\n`, "utf8");
+}
+
+function normalizeEntryForStorage(item, key) {
+  const now = new Date().toISOString();
+  return {
+    id: item.id ?? randomUUID(),
+    schemaVersion: DATA_SCHEMA_VERSION,
+    type: item.type ?? (key === "letters" ? "letter" : "sign"),
+    label: item.label,
+    createdAt: item.createdAt ?? now,
+    updatedAt: now,
+    samples: item.samples
+  };
+}
+
+function createDbExport(data) {
+  const entries = [];
+  const samples = [];
+  addExportEntries(entries, samples, data.signs ?? [], "sign");
+  addExportEntries(entries, samples, data.letters ?? [], "letter");
+  return {
+    schemaVersion: DATA_SCHEMA_VERSION,
+    exportedAt: new Date().toISOString(),
+    entries,
+    samples
+  };
+}
+
+function addExportEntries(entries, samples, items, entryType) {
+  for (const item of items) {
+    if (!item?.label || !Array.isArray(item.samples)) continue;
+    const entryId = isUuid(item.id) ? item.id : randomUUID();
+    const now = new Date().toISOString();
+    entries.push({
+      id: entryId,
+      label: item.label,
+      entry_type: item.type ?? entryType,
+      scope: "global",
+      schema_version: Number(item.schemaVersion ?? DATA_SCHEMA_VERSION),
+      created_at: validIsoDate(item.createdAt) ?? now,
+      updated_at: validIsoDate(item.updatedAt) ?? now
+    });
+
+    for (const sample of item.samples) {
+      const normalized = normalizeSampleForExport(sample);
+      samples.push({
+        id: isUuid(sample?.id) ? sample.id : randomUUID(),
+        entry_id: entryId,
+        sample_kind: normalized.kind,
+        feature_vector_version: sample?.featureVectorVersion ?? null,
+        feature_count: normalized.featureCount,
+        duration_ms: normalized.durationMs,
+        frame_count: normalized.frameCount,
+        captured_at: validIsoDate(sample?.capturedAt) ?? now,
+        vector: normalized.vector,
+        frames: normalized.frames,
+        raw_sample: sample
+      });
+    }
+  }
+}
+
+function normalizeSampleForExport(sample) {
+  if (sample?.kind === "motion" && Array.isArray(sample.frames)) {
+    return {
+      kind: "motion",
+      featureCount: Number(sample.featureCount ?? sample.frames[0]?.length ?? 0),
+      durationMs: Number(sample.durationMs ?? sample.duration ?? 0) || null,
+      frameCount: Number(sample.frameCount ?? sample.frames.length),
+      vector: null,
+      frames: sample.frames
+    };
+  }
+
+  const vector = Array.isArray(sample?.vector)
+    ? sample.vector
+    : Array.isArray(sample)
+      ? sample
+      : [];
+  return {
+    kind: "pose",
+    featureCount: Number(sample?.featureCount ?? vector.length),
+    durationMs: null,
+    frameCount: null,
+    vector,
+    frames: null
+  };
+}
+
+function isUuid(value) {
+  return typeof value === "string" && /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value);
+}
+
+function validIsoDate(value) {
+  if (!value) return null;
+  const date = new Date(value);
+  return Number.isNaN(date.getTime()) ? null : date.toISOString();
 }
 
 function isAdmin(request) {

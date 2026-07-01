@@ -3,5 +3,6 @@ node_modules/
 server.log
 server.err
 *.tgz
+data/db-export.json
 .DS_Store
 Thumbs.db

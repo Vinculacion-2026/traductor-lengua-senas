@@ -6,7 +6,7 @@ const flipButton = document.querySelector("#flipButton");
 const modeButton = document.querySelector("#modeButton");
 const clearPhraseButton = document.querySelector("#clearPhraseButton");
 const adminToggleButton = document.querySelector("#adminToggleButton");
-const resetLocalButton = document.querySelector("#resetLocalButton");
+const restoreHiddenButton = document.querySelector("#restoreHiddenButton");
 const adminLoginPanel = document.querySelector("#adminLoginPanel");
 const adminUserInput = document.querySelector("#adminUserInput");
 const adminPasswordInput = document.querySelector("#adminPasswordInput");
@@ -34,7 +34,9 @@ const motionCountdown = document.querySelector("#motionCountdown");
 const translationText = document.querySelector("#translationText");
 const confidenceText = document.querySelector("#confidenceText");
 const phraseText = document.querySelector("#phraseText");
-const phraseSuggestionText = document.querySelector("#phraseSuggestionText");
+const phraseToggleButton = document.querySelector("#phraseToggleButton");
+const orderPhraseButton = document.querySelector("#orderPhraseButton");
+const orderedPhraseText = document.querySelector("#orderedPhraseText");
 const fpsLabel = document.querySelector("#fpsLabel");
 const sampleCounter = document.querySelector("#sampleCounter");
 const pendingSampleList = document.querySelector("#pendingSampleList");
@@ -51,18 +53,19 @@ const HIDDEN_GLOBAL_SIGNS_KEY = "vinculacion.lsec.hiddenGlobalSigns.v1";
 const HIDDEN_GLOBAL_LETTERS_KEY = "vinculacion.lsec.hiddenGlobalLetters.v1";
 const ADMIN_TOKEN_KEY = "vinculacion.lsec.adminToken.v1";
 const HOLD_TO_APPEND_MS = 1100;
-const PHRASE_APPEND_THRESHOLD = 0.34;
 const CUSTOM_MATCH_THRESHOLD = 0.19;
 const LETTER_MATCH_THRESHOLD = 0.18;
-const MOTION_LETTER_MATCH_THRESHOLD = 0.12;
-const FACE_EVERY_FRAMES = 2;
+const FACE_EVERY_FRAMES = 1;
+const PREDICTION_EVERY_MS = 120;
 const MOTION_CAPTURE_INTERVAL_MS = 90;
-const MOTION_WINDOW_MS = 3200;
+const MOTION_WINDOW_MS = 2200;
 const MIN_MOTION_FRAMES = 4;
 const MOTION_RESAMPLE_FRAMES = 12;
 const SEARCH_ENABLE_THRESHOLD = 5;
 const HAND_VECTOR_SIZE = 63;
 const HEAD_FEATURE_SIZE = 5;
+const DATA_SCHEMA_VERSION = 2;
+const FEATURE_VECTOR_VERSION = "hands2-face-head-v1";
 const FACE_LANDMARK_INDICES = [
   10, 33, 61, 78, 133, 152, 159, 145, 263, 291, 308, 362, 386, 374
 ];
@@ -84,7 +87,6 @@ const ALPHABET = [
   "L", "LL", "LLL", "M", "N", "\u00d1", "O", "P", "Q", "R", "RR",
   "S", "T", "U", "V", "W", "X", "Y", "Z"
 ];
-const MOTION_LETTERS = new Set(["J", "LL", "\u00d1", "RR"]);
 const HAND_CONNECTIONS = [
   [0, 1], [1, 2], [2, 3], [3, 4],
   [0, 5], [5, 6], [6, 7], [7, 8],
@@ -105,6 +107,7 @@ let facingMode = "user";
 let running = false;
 let lastVideoTime = -1;
 let lastFrameAt = performance.now();
+let lastPredictionAt = 0;
 let frameIndex = 0;
 let lastFaceResult = null;
 let phrase = [];
@@ -219,28 +222,35 @@ flipButton.addEventListener("click", async () => {
 
 clearPhraseButton.addEventListener("click", () => {
   phrase = [];
-  updatePhraseViews();
+  phraseText.textContent = "";
+  orderedPhraseText.textContent = "";
 });
 
-resetLocalButton.addEventListener("click", async () => {
-  localStorage.removeItem(STORAGE_KEY);
-  localStorage.removeItem(LETTER_STORAGE_KEY);
-  localStorage.removeItem(HIDDEN_GLOBAL_SIGNS_KEY);
-  localStorage.removeItem(HIDDEN_GLOBAL_LETTERS_KEY);
-  customSigns = [];
-  customLetters = [];
+phraseToggleButton?.addEventListener("click", () => {
+  const expanded = phraseText.classList.toggle("expanded");
+  phraseToggleButton.textContent = expanded ? "Ver menos" : "Ver todo";
+});
+
+orderPhraseButton?.addEventListener("click", () => {
+  orderedPhraseText.textContent = phrase.length
+    ? phrase.slice().reverse().join(" ")
+    : "Aun no hay frase para ordenar.";
+});
+
+restoreHiddenButton.addEventListener("click", () => {
+  const hiddenCount = hiddenGlobalSigns.length + hiddenGlobalLetters.length;
+  if (hiddenCount === 0) {
+    adminStatusText.textContent = "No hay palabras ni letras globales ocultas en este navegador.";
+    return;
+  }
+
   hiddenGlobalSigns = [];
   hiddenGlobalLetters = [];
-  pendingSamples = [];
-  pendingLetterSamples = [];
-  phrase = [];
-  updatePhraseViews();
-  sampleCounter.textContent = "0 muestras listas";
-  letterSampleCounter.textContent = "0 muestras de letra";
-  renderPendingSamples("sign");
-  renderPendingSamples("letter");
-  await loadGlobalData();
-  adminStatusText.textContent = "Datos locales reiniciados. Se mantienen las muestras globales del servidor.";
+  localStorage.removeItem(HIDDEN_GLOBAL_SIGNS_KEY);
+  localStorage.removeItem(HIDDEN_GLOBAL_LETTERS_KEY);
+  adminStatusText.textContent = "Se restauraron las palabras y letras globales ocultas localmente.";
+  renderSignList();
+  renderLetterList();
 });
 
 signSearchInput.addEventListener("input", renderSignList);
@@ -268,7 +278,8 @@ modeButton.addEventListener("click", () => {
   mode = mode === "words" ? "letters" : "words";
   modeButton.textContent = mode === "words" ? "Modo: palabras" : "Modo: abecedario";
   phrase = [];
-  updatePhraseViews();
+  phraseText.textContent = "";
+  orderedPhraseText.textContent = "";
 });
 
 captureButton.addEventListener("click", () => {
@@ -277,7 +288,7 @@ captureButton.addEventListener("click", () => {
     sampleCounter.textContent = "No hay mano ni rostro detectado para capturar";
     return;
   }
-  pendingSamples.push(withSampleTimestamp({ kind: "pose", vector }));
+  pendingSamples.push(createPoseSample(vector));
   sampleCounter.textContent = `${pendingSamples.length} muestras listas`;
   renderPendingSamples("sign");
 });
@@ -292,7 +303,7 @@ captureLetterButton.addEventListener("click", () => {
     letterSampleCounter.textContent = "No hay mano ni rostro detectado para capturar";
     return;
   }
-  pendingLetterSamples.push(withSampleTimestamp({ kind: "pose", vector }));
+  pendingLetterSamples.push(createPoseSample(vector));
   letterSampleCounter.textContent = `${pendingLetterSamples.length} muestras de letra`;
   renderPendingSamples("letter");
 });
@@ -307,14 +318,16 @@ saveLetterButton.addEventListener("click", async () => {
     letterSampleCounter.textContent = "Elige una letra y captura al menos 1 muestra";
     return;
   }
-  const item = { label: letter, samples: [...pendingLetterSamples] };
+  const item = createTrainingEntry(letter, "letter", pendingLetterSamples);
   if (adminToken) {
     const ok = await saveGlobalItem("letters", item);
     if (!ok) return;
   } else {
     const existing = customLetters.find((entry) => entry.label === letter);
     if (existing) {
-      existing.samples.push(...pendingLetterSamples);
+      existing.samples.push(...item.samples);
+      existing.updatedAt = new Date().toISOString();
+      existing.schemaVersion = DATA_SCHEMA_VERSION;
     } else {
       customLetters.push(item);
     }
@@ -332,14 +345,16 @@ saveButton.addEventListener("click", async () => {
     sampleCounter.textContent = "Escribe un nombre y captura al menos 1 muestra";
     return;
   }
-  const item = { label: name, samples: [...pendingSamples] };
+  const item = createTrainingEntry(name, "sign", pendingSamples);
   if (adminToken) {
     const ok = await saveGlobalItem("signs", item);
     if (!ok) return;
   } else {
     const existing = customSigns.find((sign) => sign.label === name);
     if (existing) {
-      existing.samples.push(...pendingSamples);
+      existing.samples.push(...item.samples);
+      existing.updatedAt = new Date().toISOString();
+      existing.schemaVersion = DATA_SCHEMA_VERSION;
     } else {
       customSigns.push(item);
     }
@@ -404,7 +419,10 @@ function predictFrame(now) {
     const fullVector = currentVector(gestureResult, faceResult);
     trackMotionFrame(fullVector, now);
     renderDetections(gestureResult, faceResult);
-    updatePrediction(gestureResult, faceResult, now);
+    if (now - lastPredictionAt >= PREDICTION_EVERY_MS) {
+      updatePrediction(gestureResult, faceResult, now);
+      lastPredictionAt = now;
+    }
     updateFps(now);
   }
 
@@ -437,12 +455,17 @@ function renderDetections(gestureResult, faceResult) {
 
   for (const landmarks of faceResult?.faceLandmarks ?? []) {
     drawingUtils.drawConnectors(landmarks, FaceLandmarker.FACE_LANDMARKS_TESSELATION, {
-      color: "rgba(244, 242, 237, 0.22)",
-      lineWidth: 1
+      color: "rgba(244, 242, 237, 0.18)",
+      lineWidth: 0.75
     });
     drawingUtils.drawConnectors(landmarks, FaceLandmarker.FACE_LANDMARKS_FACE_OVAL, {
       color: "#f2c14e",
       lineWidth: 2
+    });
+    drawingUtils.drawLandmarks(landmarks, {
+      color: "rgba(244, 242, 237, 0.5)",
+      lineWidth: 1,
+      radius: 1.35
     });
   }
 
@@ -480,7 +503,7 @@ function updatePrediction(gestureResult, faceResult, now) {
       : { label: "Esperando letra...", score: 0 };
     translationText.textContent = activePrediction.label;
     confidenceText.textContent = `Confianza: ${Math.round(activePrediction.score * 100)}%`;
-    maybeAppendPhrase(activePrediction.label, now, activePrediction.score);
+    maybeAppendPhrase(activePrediction.label, now);
     return;
   }
 
@@ -500,7 +523,7 @@ function updatePrediction(gestureResult, faceResult, now) {
 
   translationText.textContent = activePrediction.label;
   confidenceText.textContent = `Confianza: ${Math.round(activePrediction.score * 100)}%`;
-  maybeAppendPhrase(activePrediction.label, now, activePrediction.score);
+  maybeAppendPhrase(activePrediction.label, now);
 }
 
 function classifyBaseGesture(gestureResult) {
@@ -523,7 +546,7 @@ function classifyExpression(faceResult) {
 
 function classifyLetter(gestureResult, fullVector = null) {
   const trained = classifyCustomLetter(fullVector, gestureResult);
-  if (trained?.accepted) return trained;
+  if (trained && trained.score > LETTER_MATCH_THRESHOLD) return trained;
 
   const landmarks = gestureResult?.landmarks?.[0];
   if (!landmarks) return null;
@@ -534,35 +557,17 @@ function classifyLetter(gestureResult, fullVector = null) {
 function classifyCustomLetter(vector, gestureResult = null) {
   const letters = [...visibleGlobalLetters(), ...customLetters];
   if (!vector || letters.length === 0) return null;
-  let bestPose = { label: "", distance: Infinity };
-  let bestMotion = { label: "", distance: Infinity };
+  let best = { label: "", distance: Infinity };
 
   for (const letter of letters) {
     for (const sample of letter.samples) {
-      const isMotion = sample?.kind === "motion" && Array.isArray(sample.frames);
-      const distance = sampleDistance(vector, sample, gestureResult, null, { useLetterMotion: isMotion });
-      if (isMotion) {
-        if (distance < bestMotion.distance) bestMotion = { label: letter.label, distance };
-      } else if (distance < bestPose.distance) {
-        bestPose = { label: letter.label, distance };
-      }
+      const distance = sampleDistance(vector, sample, gestureResult);
+      if (distance < best.distance) best = { label: letter.label, distance };
     }
   }
 
-  const motionScore = Math.max(0, 1 - bestMotion.distance / 3.2);
-  if (MOTION_LETTERS.has(bestMotion.label) && motionScore > MOTION_LETTER_MATCH_THRESHOLD) {
-    return { label: bestMotion.label, score: motionScore, accepted: true };
-  }
-  if (motionScore > LETTER_MATCH_THRESHOLD + 0.04) {
-    return { label: bestMotion.label, score: motionScore, accepted: true };
-  }
-
-  const poseScore = Math.max(0, 1 - bestPose.distance / 2.8);
-  if (poseScore > LETTER_MATCH_THRESHOLD) {
-    return { label: bestPose.label, score: poseScore, accepted: true };
-  }
-
-  return null;
+  const score = Math.max(0, 1 - best.distance / 2.8);
+  return { label: best.label, score };
 }
 
 function classifyLetterByShape(hands) {
@@ -670,6 +675,81 @@ function currentVector(gestureResult = null, faceResult = null) {
     Number(faceVector.present),
     ...faceVector.values
   ];
+}
+
+function createPoseSample(vector) {
+  return withSampleMetadata({
+    kind: "pose",
+    vector: [...vector],
+    featureCount: vector.length
+  });
+}
+
+function createMotionSample(recording) {
+  const durationMs = Math.round(recording.frames.at(-1).time - recording.frames[0].time);
+  return withSampleMetadata({
+    kind: "motion",
+    duration: durationMs,
+    durationMs,
+    frameCount: recording.frames.length,
+    frames: recording.frames.map((frame) => [...frame.vector]),
+    featureCount: recording.frames[0]?.vector?.length ?? 0
+  });
+}
+
+function withSampleMetadata(sample) {
+  const capturedAt = new Date().toISOString();
+  return {
+    id: createId("sample"),
+    schemaVersion: DATA_SCHEMA_VERSION,
+    featureVectorVersion: FEATURE_VECTOR_VERSION,
+    capturedAt,
+    ...sample
+  };
+}
+
+function createTrainingEntry(label, type, samples) {
+  const now = new Date().toISOString();
+  return {
+    id: createId(type),
+    schemaVersion: DATA_SCHEMA_VERSION,
+    type,
+    label,
+    createdAt: now,
+    updatedAt: now,
+    samples: samples.map(normalizeSampleForStorage)
+  };
+}
+
+function normalizeSampleForStorage(sample) {
+  if (sample?.schemaVersion && sample?.id && sample?.capturedAt) return sample;
+
+  if (sample?.kind === "motion" && Array.isArray(sample.frames)) {
+    const frames = sample.frames.map((frame) => Array.isArray(frame) ? [...frame] : frame);
+    return withSampleMetadata({
+      ...sample,
+      durationMs: Math.round(sample.durationMs ?? sample.duration ?? 0),
+      frameCount: frames.length,
+      featureCount: frames[0]?.length ?? 0,
+      frames
+    });
+  }
+
+  const vector = Array.isArray(sample?.vector)
+    ? [...sample.vector]
+    : Array.isArray(sample)
+      ? [...sample]
+      : [];
+  return withSampleMetadata({
+    kind: "pose",
+    vector,
+    featureCount: vector.length
+  });
+}
+
+function createId(prefix) {
+  const randomPart = globalThis.crypto?.randomUUID?.() ?? `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+  return `${prefix}_${randomPart}`;
 }
 
 function toggleMotionCapture(type) {
@@ -798,12 +878,7 @@ function stopMotionCapture(cancelled) {
     return;
   }
 
-  pending.push({
-    kind: "motion",
-    ...sampleTimestamp(),
-    duration: recording.frames.at(-1).time - recording.frames[0].time,
-    frames: recording.frames.map((frame) => frame.vector)
-  });
+  pending.push(createMotionSample(recording));
   counter.textContent = recording.type === "letter"
     ? `${pending.length} muestras de letra`
     : `${pending.length} muestras listas`;
@@ -896,7 +971,7 @@ function classifyCustom(vector, gestureResult = null) {
 
   for (const sign of signs) {
     for (const sample of sign.samples) {
-      const distance = sampleDistance(vector, sample, gestureResult, legacyHandVector, { useHeadMotion: true });
+      const distance = sampleDistance(vector, sample, gestureResult, legacyHandVector);
       if (distance < best.distance) best = { label: sign.label, distance };
     }
   }
@@ -905,9 +980,9 @@ function classifyCustom(vector, gestureResult = null) {
   return { label: best.label, score };
 }
 
-function sampleDistance(vector, sample, gestureResult = null, legacyHandVector = null, options = {}) {
+function sampleDistance(vector, sample, gestureResult = null, legacyHandVector = null) {
   if (sample?.kind === "motion" && Array.isArray(sample.frames)) {
-    return motionDistance(currentMotionSequence(), sample.frames, options);
+    return motionDistance(currentMotionSequence(), sample.frames);
   }
 
   const sampleVector = sample?.kind === "pose" && Array.isArray(sample.vector)
@@ -926,51 +1001,16 @@ function currentMotionSequence() {
   return recentMotionFrames.map((frame) => frame.vector);
 }
 
-function motionDistance(currentFrames, sampleFrames, options = {}) {
+function motionDistance(currentFrames, sampleFrames) {
   if (!currentFrames || !sampleFrames || currentFrames.length < MIN_MOTION_FRAMES) return Infinity;
   const current = resampleFrames(currentFrames, MOTION_RESAMPLE_FRAMES);
   const sample = resampleFrames(sampleFrames, MOTION_RESAMPLE_FRAMES);
   let total = 0;
 
   for (let index = 0; index < MOTION_RESAMPLE_FRAMES; index += 1) {
-    total += options.useLetterMotion
-      ? letterMotionFrameDistance(current[index], sample[index])
-      : options.useHeadMotion
-      ? signMotionFrameDistance(current[index], sample[index])
-      : euclideanDistance(current[index], sample[index]);
+    total += euclideanDistance(current[index], sample[index]);
   }
   return total / MOTION_RESAMPLE_FRAMES;
-}
-
-function letterMotionFrameDistance(currentFrame, sampleFrame) {
-  const baseDistance = euclideanDistance(currentFrame, sampleFrame);
-  const handDistance = euclideanDistance(handMotionFeatures(currentFrame), handMotionFeatures(sampleFrame));
-  if (!Number.isFinite(handDistance)) return baseDistance;
-  return (baseDistance * 0.45) + (handDistance * 0.55);
-}
-
-function handMotionFeatures(vector) {
-  if (!Array.isArray(vector)) return [];
-  const firstHandPresent = vector[0] === 1;
-  const secondHandStart = 1 + HAND_VECTOR_SIZE;
-  const secondHandPresent = vector[secondHandStart] === 1;
-  if (firstHandPresent) return vector.slice(1, 1 + HAND_VECTOR_SIZE);
-  if (secondHandPresent) return vector.slice(secondHandStart + 1, secondHandStart + 1 + HAND_VECTOR_SIZE);
-  return Array(HAND_VECTOR_SIZE).fill(0);
-}
-
-function signMotionFrameDistance(currentFrame, sampleFrame) {
-  const baseDistance = euclideanDistance(currentFrame, sampleFrame);
-  const headDistance = euclideanDistance(headFeatures(currentFrame), headFeatures(sampleFrame));
-  if (!Number.isFinite(headDistance)) return baseDistance;
-  return (baseDistance * 0.55) + (headDistance * 0.45);
-}
-
-function headFeatures(vector) {
-  if (!Array.isArray(vector)) return [];
-  const faceStart = 2 + (HAND_VECTOR_SIZE * 2);
-  if (vector[faceStart] !== 1) return Array(HEAD_FEATURE_SIZE).fill(0);
-  return vector.slice(faceStart + 1, faceStart + 1 + HEAD_FEATURE_SIZE);
 }
 
 function resampleFrames(frames, targetCount) {
@@ -996,15 +1036,8 @@ function euclideanDistance(a, b) {
   return Math.sqrt(total / length) + lengthPenalty;
 }
 
-function maybeAppendPhrase(label, now, score = 0) {
-  const token = cleanPhraseToken(label);
-  if (
-    label === "Esperando senia..." ||
-    label === "Esperando letra..." ||
-    label.startsWith("expresion:") ||
-    !token ||
-    score < PHRASE_APPEND_THRESHOLD
-  ) {
+function maybeAppendPhrase(label, now) {
+  if (label === "Esperando senia..." || label === "Esperando letra..." || label.startsWith("expresion:")) {
     holdLabel = "";
     holdStart = 0;
     return;
@@ -1016,54 +1049,12 @@ function maybeAppendPhrase(label, now, score = 0) {
     return;
   }
 
-  if (now - holdStart > HOLD_TO_APPEND_MS && phrase.at(-1) !== token) {
-    phrase.push(token);
-    updatePhraseViews();
+  if (now - holdStart > HOLD_TO_APPEND_MS && phrase[0] !== label) {
+    phrase.unshift(label);
+    phraseText.textContent = phrase.join(" ");
+    orderedPhraseText.textContent = "";
     holdStart = now + 999999;
   }
-}
-
-function updatePhraseViews() {
-  const rawPhrase = phrase.join(" ");
-  phraseText.textContent = rawPhrase;
-  if (!phraseSuggestionText) return;
-  const suggestion = phrase.length > 0 ? buildPhraseSuggestion(phrase) : "";
-  const suggestionBox = phraseSuggestionText.closest(".phrase-suggestion");
-  if (!suggestion) {
-    phraseSuggestionText.textContent = "";
-    suggestionBox?.classList.add("hidden");
-    return;
-  }
-  phraseSuggestionText.textContent = suggestion;
-  suggestionBox?.classList.remove("hidden");
-}
-
-function buildPhraseSuggestion(tokens) {
-  const cleaned = tokens
-    .map(cleanPhraseToken)
-    .filter(Boolean)
-    .filter((token, index, list) => token !== list[index - 1])
-    .filter((token, index, list) => !isLikelyNoiseToken(token, index, list));
-  if (cleaned.length === 0) return "";
-  const original = tokens.map(cleanPhraseToken).filter(Boolean).join(" ");
-  const phraseTextValue = cleaned.join(" ");
-  if (phraseTextValue === original) return "";
-  return `${phraseTextValue.charAt(0).toUpperCase()}${phraseTextValue.slice(1)}.`;
-}
-
-function isLikelyNoiseToken(token, index, list) {
-  const shortFillers = new Set(["si", "bien", "hola"]);
-  if (list.length <= 2) return false;
-  return shortFillers.has(token) && index > 0 && index < list.length - 1;
-}
-
-function cleanPhraseToken(label) {
-  return String(label)
-    .replace(/^expresion:\s*/i, "")
-    .split("/")
-    .at(0)
-    .trim()
-    .toLowerCase();
 }
 
 function updateFps(now) {
@@ -1142,9 +1133,10 @@ async function saveGlobalItem(type, item) {
   }
 }
 
-async function deleteGlobalItem(type, label) {
+async function deleteGlobalItem(type, label, sampleIndex = null) {
   try {
-    const response = await fetch(`/api/global-data?type=${type}&label=${encodeURIComponent(label)}`, {
+    const sampleQuery = sampleIndex === null ? "" : `&sampleIndex=${sampleIndex}`;
+    const response = await fetch(`/api/global-data?type=${type}&label=${encodeURIComponent(label)}${sampleQuery}`, {
       method: "DELETE",
       headers: { "Authorization": `Bearer ${adminToken}` }
     });
@@ -1163,27 +1155,6 @@ async function deleteGlobalItem(type, label) {
   }
 }
 
-async function deleteGlobalSample(type, label, sampleIndex) {
-  try {
-    const response = await fetch(`/api/global-data?type=${type}&label=${encodeURIComponent(label)}&sampleIndex=${sampleIndex}`, {
-      method: "DELETE",
-      headers: { "Authorization": `Bearer ${adminToken}` }
-    });
-    const data = await response.json();
-    if (!response.ok) {
-      adminStatusText.textContent = data.error ?? "No se pudo borrar la muestra global";
-      return;
-    }
-    globalSigns = Array.isArray(data.signs) ? data.signs : [];
-    globalLetters = Array.isArray(data.letters) ? data.letters : [];
-    renderSignList();
-    renderLetterList();
-  } catch (error) {
-    console.error(error);
-    adminStatusText.textContent = "No se pudo conectar para borrar la muestra global";
-  }
-}
-
 function updateAdminUi() {
   const isAdmin = Boolean(adminToken);
   adminLoginPanel.classList.toggle("hidden", isAdmin);
@@ -1195,36 +1166,6 @@ function updateAdminUi() {
   letterScopeText.textContent = isAdmin ? "Guardado global" : "Guardado local";
   renderSignList();
   renderLetterList();
-}
-
-function withSampleTimestamp(sample) {
-  return { ...sample, ...sampleTimestamp() };
-}
-
-function sampleTimestamp(date = new Date()) {
-  return {
-    capturedAt: date.toISOString(),
-    capturedAtLabel: date.toLocaleTimeString("es-EC", {
-      hour: "2-digit",
-      minute: "2-digit",
-      second: "2-digit"
-    })
-  };
-}
-
-function sampleTimeLabel(sample) {
-  if (sample?.capturedAtLabel) return sample.capturedAtLabel;
-  if (sample?.capturedAt) {
-    const date = new Date(sample.capturedAt);
-    if (!Number.isNaN(date.getTime())) {
-      return date.toLocaleTimeString("es-EC", {
-        hour: "2-digit",
-        minute: "2-digit",
-        second: "2-digit"
-      });
-    }
-  }
-  return "sin hora";
 }
 
 function renderPendingSamples(type) {
@@ -1239,8 +1180,12 @@ function renderPendingSamples(type) {
   samples.forEach((sample, index) => {
     const item = document.createElement("div");
     item.className = "sample-chip";
-    const text = document.createElement("span");
-    text.textContent = `Muestra ${index + 1} - ${sampleTimeLabel(sample)}`;
+    const kind = sample.kind === "motion" ? "movimiento" : "pose";
+    const capturedTime = formatSampleTime(sample);
+    const detail = sample.kind === "motion" && sample.frameCount
+      ? `${kind}, ${sample.frameCount} frames`
+      : kind;
+    item.innerHTML = `<span>Muestra ${index + 1}: ${detail}${capturedTime ? ` - ${capturedTime}` : ""}</span>`;
     const removeButton = document.createElement("button");
     removeButton.type = "button";
     removeButton.textContent = "Quitar";
@@ -1251,12 +1196,23 @@ function renderPendingSamples(type) {
         : `${samples.length} muestras listas`;
       renderPendingSamples(type);
     });
-    item.append(text, removeButton);
+    item.append(removeButton);
     list.append(item);
   });
 }
 
-function renderSignList() {
+function formatSampleTime(sample) {
+  if (!sample?.capturedAt) return "";
+  const date = new Date(sample.capturedAt);
+  if (Number.isNaN(date.getTime())) return "";
+  return date.toLocaleTimeString("es-EC", {
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit"
+  });
+}
+
+function renderSignListLegacy() {
   signList.innerHTML = "";
   const allSigns = [
     ...visibleGlobalSigns().map((item) => ({ ...item, scope: "global" })),
@@ -1283,96 +1239,30 @@ function renderSignList() {
   }
 
   for (const sign of visibleSigns) {
-    const chip = document.createElement("details");
-    chip.className = "sign-chip saved-entry";
-    const summary = document.createElement("summary");
-    const title = document.createElement("span");
-    title.innerHTML = `${sign.label} (${sign.samples.length}) <small>${sign.scope}</small>`;
+    const chip = document.createElement("div");
+    chip.className = "sign-chip";
+    chip.innerHTML = `<span>${sign.label} (${sign.samples.length}) <small>${sign.scope}</small></span>`;
     const removeButton = document.createElement("button");
     removeButton.type = "button";
     removeButton.textContent = "Borrar";
-    removeButton.addEventListener("click", (event) => {
-      event.preventDefault();
-      event.stopPropagation();
-      removeSignEntry(sign);
-    });
-    summary.append(title, removeButton);
-    chip.append(summary, renderSavedSamples("signs", sign));
-    signList.append(chip);
-  }
-}
-
-function removeSignEntry(sign) {
-  if (sign.scope === "global") {
-    if (adminToken) {
-      deleteGlobalItem("signs", sign.label);
-    } else {
-      hiddenGlobalSigns = uniqueStrings([...hiddenGlobalSigns, sign.label]);
-      saveStringList(HIDDEN_GLOBAL_SIGNS_KEY, hiddenGlobalSigns);
-      adminStatusText.textContent = "Muestra global ocultada solo en este navegador.";
-      renderSignList();
-    }
-    return;
-  }
-  customSigns = customSigns.filter((item) => item.label !== sign.label);
-  saveSigns(customSigns);
-  renderSignList();
-}
-
-function renderSavedSamples(type, entry) {
-  const list = document.createElement("div");
-  list.className = "saved-sample-list";
-  if (!Array.isArray(entry.samples) || entry.samples.length === 0) {
-    const empty = document.createElement("p");
-    empty.className = "helper";
-    empty.textContent = "No quedan muestras en esta entrada.";
-    list.append(empty);
-    return list;
-  }
-
-  entry.samples.forEach((sample, index) => {
-    const item = document.createElement("div");
-    item.className = "sample-chip saved-sample-chip";
-    const label = document.createElement("span");
-    label.textContent = `Muestra ${index + 1} - ${sampleTimeLabel(sample)}`;
-    const removeButton = document.createElement("button");
-    removeButton.type = "button";
-    removeButton.textContent = "Quitar";
-    if (entry.scope === "global" && !adminToken) {
-      removeButton.disabled = true;
-      removeButton.title = "Solo el administrador puede quitar muestras globales.";
-    }
     removeButton.addEventListener("click", () => {
-      if (entry.scope === "global") {
+      if (sign.scope === "global") {
         if (adminToken) {
-          deleteGlobalSample(type, entry.label, index);
+          deleteGlobalItem("signs", sign.label);
         } else {
-          adminStatusText.textContent = "En modo local solo puedes quitar tus muestras locales.";
+          hiddenGlobalSigns = uniqueStrings([...hiddenGlobalSigns, sign.label]);
+          saveStringList(HIDDEN_GLOBAL_SIGNS_KEY, hiddenGlobalSigns);
+          adminStatusText.textContent = "Seña global ocultada solo en este navegador.";
+          renderSignList();
         }
         return;
       }
-      removeLocalSample(type, entry.label, index);
+      customSigns = customSigns.filter((item) => item.label !== sign.label);
+      saveSigns(customSigns);
+      renderSignList();
     });
-    item.append(label, removeButton);
-    list.append(item);
-  });
-  return list;
-}
-
-function removeLocalSample(type, label, index) {
-  const collection = type === "letters" ? customLetters : customSigns;
-  const entry = collection.find((item) => item.label === label);
-  if (!entry || !Array.isArray(entry.samples)) return;
-  entry.samples.splice(index, 1);
-  const remaining = collection.filter((item) => item.samples?.length > 0);
-  if (type === "letters") {
-    customLetters = remaining;
-    saveLetters(customLetters);
-    renderLetterList();
-  } else {
-    customSigns = remaining;
-    saveSigns(customSigns);
-    renderSignList();
+    chip.append(removeButton);
+    signList.append(chip);
   }
 }
 
@@ -1386,7 +1276,7 @@ function renderLetterSelect() {
   }
 }
 
-function renderLetterList() {
+function renderLetterListLegacy() {
   letterList.innerHTML = "";
   const allLetters = [
     ...visibleGlobalLetters().map((item) => ({ ...item, scope: "global" })),
@@ -1413,40 +1303,240 @@ function renderLetterList() {
   }
 
   for (const letter of visibleLetters) {
-    const chip = document.createElement("details");
-    chip.className = "sign-chip saved-entry";
-    const summary = document.createElement("summary");
-    const title = document.createElement("span");
-    title.innerHTML = `${letter.label} (${letter.samples.length}) <small>${letter.scope}</small>`;
+    const chip = document.createElement("div");
+    chip.className = "sign-chip";
+    chip.innerHTML = `<span>${letter.label} (${letter.samples.length}) <small>${letter.scope}</small></span>`;
     const removeButton = document.createElement("button");
     removeButton.type = "button";
     removeButton.textContent = "Borrar";
-    removeButton.addEventListener("click", (event) => {
-      event.preventDefault();
-      event.stopPropagation();
-      removeLetterEntry(letter);
+    removeButton.addEventListener("click", () => {
+      if (letter.scope === "global") {
+        if (adminToken) {
+          deleteGlobalItem("letters", letter.label);
+        } else {
+          hiddenGlobalLetters = uniqueStrings([...hiddenGlobalLetters, letter.label]);
+          saveStringList(HIDDEN_GLOBAL_LETTERS_KEY, hiddenGlobalLetters);
+          adminStatusText.textContent = "Letra global ocultada solo en este navegador.";
+          renderLetterList();
+        }
+        return;
+      }
+      customLetters = customLetters.filter((item) => item.label !== letter.label);
+      saveLetters(customLetters);
+      renderLetterList();
     });
-    summary.append(title, removeButton);
-    chip.append(summary, renderSavedSamples("letters", letter));
+    chip.append(removeButton);
     letterList.append(chip);
   }
 }
 
-function removeLetterEntry(letter) {
-  if (letter.scope === "global") {
+function renderSignList() {
+  renderSavedList({
+    container: signList,
+    searchInput: signSearchInput,
+    globalItems: visibleGlobalSigns(),
+    localItems: customSigns,
+    emptyText: "Aun no hay senias ecuatorianas guardadas.",
+    noResultsText: "No hay senias que coincidan con la busqueda.",
+    apiType: "signs",
+    localStore: "signs"
+  });
+}
+
+function renderLetterList() {
+  renderSavedList({
+    container: letterList,
+    searchInput: letterSearchInput,
+    globalItems: visibleGlobalLetters(),
+    localItems: customLetters,
+    emptyText: "Puedes mejorar cada letra capturando tus propias muestras.",
+    noResultsText: "No hay letras que coincidan con la busqueda.",
+    apiType: "letters",
+    localStore: "letters"
+  });
+}
+
+function renderSavedList({ container, searchInput, globalItems, localItems, emptyText, noResultsText, apiType, localStore }) {
+  container.innerHTML = "";
+  const allItems = mergeEntriesForList(globalItems, localItems);
+  const canSearch = allItems.length > 0;
+  searchInput.disabled = !canSearch;
+  if (!canSearch) searchInput.value = "";
+
+  if (allItems.length === 0) {
+    container.innerHTML = `<p class="helper">${emptyText}</p>`;
+    return;
+  }
+
+  const query = searchInput.value.trim().toLowerCase();
+  const visibleItems = query
+    ? allItems.filter((item) => item.label.toLowerCase().includes(query))
+    : allItems;
+  visibleItems.sort(compareByLabel);
+
+  if (visibleItems.length === 0) {
+    container.innerHTML = `<p class="helper">${noResultsText}</p>`;
+    return;
+  }
+
+  for (const entry of visibleItems) {
+    container.append(createSavedEntryCard(entry, apiType, localStore));
+  }
+}
+
+function mergeEntriesForList(globalItems, localItems) {
+  const entries = new Map();
+  const addItems = (items, scope) => {
+    for (const item of items) {
+      const key = item.label.toLowerCase();
+      const entry = entries.get(key) ?? {
+        label: item.label,
+        scopes: new Set(),
+        samples: []
+      };
+      entry.scopes.add(scope);
+      const samples = Array.isArray(item.samples) ? item.samples : [];
+      samples.forEach((sample, sampleIndex) => {
+        entry.samples.push({ sample, scope, sampleIndex });
+      });
+      entries.set(key, entry);
+    }
+  };
+
+  addItems(globalItems, "global");
+  addItems(localItems, "local");
+  return [...entries.values()].map((entry) => ({
+    ...entry,
+    scope: [...entry.scopes].join(" + ")
+  }));
+}
+
+function createSavedEntryCard(entry, apiType, localStore) {
+  const chip = document.createElement("details");
+  chip.className = "sign-chip saved-entry";
+
+  const summary = document.createElement("summary");
+  summary.innerHTML = `<span>${entry.label} (${entry.samples.length}) <small>${entry.scope}</small></span>`;
+  const removeButton = document.createElement("button");
+  removeButton.type = "button";
+  removeButton.textContent = "Borrar";
+  removeButton.addEventListener("click", (event) => {
+    event.preventDefault();
+    event.stopPropagation();
+    removeSavedEntry(entry, apiType, localStore);
+  });
+  summary.append(removeButton);
+  chip.append(summary);
+
+  const sampleList = document.createElement("div");
+  sampleList.className = "saved-sample-list";
+  entry.samples.forEach((sampleRef, visibleIndex) => {
+    sampleList.append(createSavedSampleChip(entry, sampleRef, visibleIndex, apiType, localStore));
+  });
+  chip.append(sampleList);
+  return chip;
+}
+
+function createSavedSampleChip(entry, sampleRef, visibleIndex, apiType, localStore) {
+  const chip = document.createElement("div");
+  chip.className = "sample-chip saved-sample-chip";
+  const sample = sampleRef.sample;
+  const kind = sample?.kind === "motion" ? "movimiento" : "pose";
+  const capturedTime = formatSampleDateTime(sample);
+  const detail = sample?.kind === "motion" && sample?.frameCount
+    ? `${kind}, ${sample.frameCount} frames`
+    : kind;
+  chip.innerHTML = `<span>Muestra ${visibleIndex + 1}: ${detail}${capturedTime ? ` - ${capturedTime}` : ""} <small>${sampleRef.scope}</small></span>`;
+
+  const removeButton = document.createElement("button");
+  removeButton.type = "button";
+  removeButton.textContent = "Quitar";
+  removeButton.addEventListener("click", (event) => {
+    event.preventDefault();
+    event.stopPropagation();
+    removeSavedSample(entry.label, sampleRef, apiType, localStore);
+  });
+  chip.append(removeButton);
+  return chip;
+}
+
+function removeSavedEntry(entry, apiType, localStore) {
+  if (entry.scopes.has("global")) {
     if (adminToken) {
-      deleteGlobalItem("letters", letter.label);
+      deleteGlobalItem(apiType, entry.label);
+    } else if (apiType === "signs") {
+      hiddenGlobalSigns = uniqueStrings([...hiddenGlobalSigns, entry.label]);
+      saveStringList(HIDDEN_GLOBAL_SIGNS_KEY, hiddenGlobalSigns);
+      adminStatusText.textContent = "Sena global ocultada solo en este navegador.";
+      renderSignList();
     } else {
-      hiddenGlobalLetters = uniqueStrings([...hiddenGlobalLetters, letter.label]);
+      hiddenGlobalLetters = uniqueStrings([...hiddenGlobalLetters, entry.label]);
       saveStringList(HIDDEN_GLOBAL_LETTERS_KEY, hiddenGlobalLetters);
       adminStatusText.textContent = "Letra global ocultada solo en este navegador.";
       renderLetterList();
     }
+  }
+
+  if (entry.scopes.has("local")) {
+    removeLocalEntry(localStore, entry.label);
+  }
+}
+
+function removeSavedSample(label, sampleRef, apiType, localStore) {
+  if (sampleRef.scope === "global") {
+    if (!adminToken) {
+      adminStatusText.textContent = "Las muestras globales solo se borran entrando como administrador.";
+      return;
+    }
+    deleteGlobalItem(apiType, label, sampleRef.sampleIndex);
     return;
   }
-  customLetters = customLetters.filter((item) => item.label !== letter.label);
-  saveLetters(customLetters);
-  renderLetterList();
+
+  removeLocalSample(localStore, label, sampleRef.sampleIndex);
+}
+
+function removeLocalEntry(localStore, label) {
+  if (localStore === "letters") {
+    customLetters = customLetters.filter((item) => item.label !== label);
+    saveLetters(customLetters);
+    renderLetterList();
+    return;
+  }
+  customSigns = customSigns.filter((item) => item.label !== label);
+  saveSigns(customSigns);
+  renderSignList();
+}
+
+function removeLocalSample(localStore, label, sampleIndex) {
+  const items = localStore === "letters" ? customLetters : customSigns;
+  const entry = items.find((item) => item.label === label);
+  if (!entry || !Array.isArray(entry.samples)) return;
+  entry.samples.splice(sampleIndex, 1);
+  entry.updatedAt = new Date().toISOString();
+  const nextItems = items.filter((item) => item.samples?.length > 0);
+
+  if (localStore === "letters") {
+    customLetters = nextItems;
+    saveLetters(customLetters);
+    renderLetterList();
+    return;
+  }
+  customSigns = nextItems;
+  saveSigns(customSigns);
+  renderSignList();
+}
+
+function formatSampleDateTime(sample) {
+  if (!sample?.capturedAt) return "";
+  const date = new Date(sample.capturedAt);
+  if (Number.isNaN(date.getTime())) return "";
+  return date.toLocaleString("es-EC", {
+    day: "2-digit",
+    month: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit"
+  });
 }
 
 function compareByLabel(a, b) {
@@ -1461,10 +1551,6 @@ function visibleGlobalSigns() {
 function visibleGlobalLetters() {
   if (adminToken) return globalLetters;
   return globalLetters.filter((item) => !hiddenGlobalLetters.includes(item.label));
-}
-
-function uniqueStrings(values) {
-  return [...new Set(values.filter(Boolean))];
 }
 
 function loadSigns() {
@@ -1491,10 +1577,14 @@ function saveLetters(letters) {
   localStorage.setItem(LETTER_STORAGE_KEY, JSON.stringify(letters));
 }
 
+function uniqueStrings(values) {
+  return [...new Set(values.map((value) => String(value)).filter(Boolean))];
+}
+
 function loadStringList(key) {
   try {
-    const value = JSON.parse(localStorage.getItem(key));
-    return Array.isArray(value) ? value.filter((item) => typeof item === "string") : [];
+    const values = JSON.parse(localStorage.getItem(key));
+    return Array.isArray(values) ? uniqueStrings(values) : [];
   } catch {
     return [];
   }

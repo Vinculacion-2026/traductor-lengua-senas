@@ -10,13 +10,13 @@
     <main class="app-shell">
       <section class="workspace" aria-label="Camara y deteccion">
         <header class="topbar">
-          <div>
+          <div class="brand">
             <p class="eyebrow">Lengua de señas ecuatoriana</p>
-            <h1>VInculacion</h1>
+            <img class="brand-logo" src="./assets/puce-logo.png" alt="PUCE" />
           </div>
           <div class="top-actions">
             <button id="adminToggleButton" type="button" class="secondary">Inicio de sesion administrador</button>
-            <button id="resetLocalButton" type="button" class="secondary">Reiniciar local</button>
+            <button id="restoreHiddenButton" type="button" class="secondary">Restaurar ocultos locales</button>
             <div class="status" id="modelStatus">Cargando modelos...</div>
           </div>
         </header>
@@ -58,28 +58,32 @@
             <h2>Traduccion en tiempo real</h2>
             <span id="fpsLabel">0 fps</span>
           </div>
-          <p class="translation" id="translationText">Esperando senia...</p>
+          <p class="translation" id="translationText">Esperando seña...</p>
           <p class="confidence" id="confidenceText">Confianza: --</p>
-          <div class="phrase" id="phraseText"></div>
-          <div class="phrase-suggestion hidden">
-            <span>Tal vez quisiste decir</span>
-            <p id="phraseSuggestionText"></p>
+          <div class="phrase-toolbar">
+            <span>Frase traducida</span>
+            <button id="phraseToggleButton" type="button" class="ghost-button">Ver todo</button>
           </div>
+          <div class="phrase" id="phraseText"></div>
+          <div class="order-row">
+            <button id="orderPhraseButton" type="button" class="secondary">Ordenar traduccion</button>
+          </div>
+          <div class="ordered-translation" id="orderedPhraseText"></div>
         </section>
 
         <div class="training-grid">
-          <details class="panel train-panel" open>
-            <summary>
-              <span>Entrenar senia Ecuador</span>
-              <small>Palabras y frases</small>
-            </summary>
+        <section class="panel train-panel">
+          <div class="panel-heading">
+            <h2>Entrenar seña Ecuador</h2>
+          </div>
+          <label class="field">
+            <span>Nombre de la seña</span>
+            <input id="signNameInput" type="text" placeholder="Ej: gracias, agua, ayuda" />
+          </label>
+          <p class="scope-status" id="signScopeText">Guardado local</p>
+          <div class="motion-timers">
             <label class="field">
-              <span>Nombre de la senia</span>
-              <input id="signNameInput" type="text" placeholder="Ej: gracias, agua, ayuda" />
-            </label>
-            <p class="scope-status" id="signScopeText">Guardado local</p>
-            <label class="field motion-delay-field">
-              <span>Esperar antes de grabar movimiento</span>
+              <span>Esperar para grabar</span>
               <select id="motionDelaySelect" aria-label="Espera para grabar movimiento">
                 <option value="0">0 segundos</option>
                 <option value="1">1 segundo</option>
@@ -94,8 +98,8 @@
                 <option value="10">10 segundos</option>
               </select>
             </label>
-            <label class="field motion-delay-field">
-              <span>Detener grabacion automaticamente</span>
+            <label class="field">
+              <span>Duracion muestra</span>
               <select id="motionDurationSelect" aria-label="Duracion para grabar movimiento">
                 <option value="0">Manual</option>
                 <option value="1">1 segundo</option>
@@ -110,33 +114,35 @@
                 <option value="10">10 segundos</option>
               </select>
             </label>
-            <div class="train-actions">
-              <button id="captureButton" type="button">Capturar muestra</button>
-              <button id="captureMotionButton" type="button" class="secondary">Captura con movimiento</button>
-              <button id="saveButton" type="button">Guardar senia</button>
-            </div>
-            <p class="helper" id="sampleCounter">0 muestras listas</p>
-            <div class="sample-list" id="pendingSampleList"></div>
-            <label class="field search-field">
-              <span>Buscar senia guardada</span>
-              <input id="signSearchInput" type="search" placeholder="Buscar palabra o frase" disabled />
-            </label>
-            <div class="sign-list" id="signList"></div>
-          </details>
+          </div>
+          <div class="train-actions">
+            <button id="captureButton" type="button">Capturar muestra</button>
+            <button id="captureMotionButton" type="button" class="secondary">Captura con movimiento</button>
+            <button id="saveButton" type="button">Guardar seña</button>
+          </div>
+          <p class="helper" id="sampleCounter">0 muestras listas</p>
+          <div class="sample-list" id="pendingSampleList"></div>
+          <label class="field search-field">
+            <span>Buscar seña guardada</span>
+            <input id="signSearchInput" type="search" placeholder="Buscar palabra o frase" disabled />
+          </label>
+          <div class="sign-list" id="signList"></div>
+        </section>
 
-          <details class="panel train-panel" open>
-            <summary>
-              <span>Abecedario LSEC</span>
-              <small id="letterStatus">LSEC</small>
-            </summary>
-            <p class="letter-output" id="letterOutput">--</p>
+        <section class="panel train-panel">
+          <div class="panel-heading">
+            <h2>Abecedario LSEC</h2>
+            <span id="letterStatus">LSEC</span>
+          </div>
+          <p class="letter-output" id="letterOutput">--</p>
+          <label class="field">
+            <span>Letra o sonido para entrenar</span>
+            <select id="letterSelect" aria-label="Letra para entrenar"></select>
+          </label>
+          <p class="scope-status" id="letterScopeText">Guardado local</p>
+          <div class="motion-timers">
             <label class="field">
-              <span>Letra o sonido para entrenar</span>
-              <select id="letterSelect" aria-label="Letra para entrenar"></select>
-            </label>
-            <p class="scope-status" id="letterScopeText">Guardado local</p>
-            <label class="field motion-delay-field">
-              <span>Esperar antes de grabar movimiento</span>
+              <span>Esperar para grabar</span>
               <select id="letterMotionDelaySelect" aria-label="Espera para grabar movimiento de letra">
                 <option value="0">0 segundos</option>
                 <option value="1">1 segundo</option>
@@ -151,8 +157,8 @@
                 <option value="10">10 segundos</option>
               </select>
             </label>
-            <label class="field motion-delay-field">
-              <span>Detener grabacion automaticamente</span>
+            <label class="field">
+              <span>Duracion muestra</span>
               <select id="letterMotionDurationSelect" aria-label="Duracion para grabar movimiento de letra">
                 <option value="0">Manual</option>
                 <option value="1">1 segundo</option>
@@ -167,21 +173,22 @@
                 <option value="10">10 segundos</option>
               </select>
             </label>
-            <div class="train-actions">
-              <button id="captureLetterButton" type="button">Capturar letra</button>
-              <button id="captureLetterMotionButton" type="button" class="secondary">Captura con movimiento</button>
-              <button id="saveLetterButton" type="button">Guardar letra</button>
-            </div>
-            <p class="helper" id="letterSampleCounter">0 muestras de letra</p>
-            <div class="sample-list" id="pendingLetterSampleList"></div>
-            <label class="field search-field">
-              <span>Buscar letra guardada</span>
-              <input id="letterSearchInput" type="search" placeholder="Buscar letra o sonido" disabled />
-            </label>
-            <div class="sign-list" id="letterList"></div>
-          </details>
-        </div>
+          </div>
+          <div class="train-actions">
+            <button id="captureLetterButton" type="button">Capturar letra</button>
+            <button id="captureLetterMotionButton" type="button" class="secondary">Captura con movimiento</button>
+            <button id="saveLetterButton" type="button">Guardar letra</button>
+          </div>
+          <p class="helper" id="letterSampleCounter">0 muestras de letra</p>
+          <div class="sample-list" id="pendingLetterSampleList"></div>
+          <label class="field search-field">
+            <span>Buscar letra guardada</span>
+            <input id="letterSearchInput" type="search" placeholder="Buscar letra o sonido" disabled />
+          </label>
+          <div class="sign-list" id="letterList"></div>
+        </section>
 
+        </div>
       </aside>
     </main>
 
